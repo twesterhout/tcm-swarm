@@ -1,6 +1,6 @@
 name:                tcm-swarm
 version:             0.1.0.0
--- synopsis:
+synopsis:            Particle Swarm Optimisation related code
 -- description:
 homepage:            https://github.com/twesterhout/tcm-swarm#readme
 license:             BSD3
@@ -15,13 +15,39 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Swarm
-                     , Heisenberg
+  exposed-modules:     PSO.Swarm
+                     , PSO.VectorSpace
+                     , PSO.Random
+                     , PSO.Heisenberg
+                     , PSO.Energy
   build-depends:       base >= 4.7 && < 5
                      , random >= 1.1
                      , lens
                      , mtl >= 2.2
                      , hmatrix >= 0.18
+                     , mersenne-random
+                     , mwc-random
+                     , primitive >= 0.6
+                     , vector >= 0.12
+                     , storable-tuple
+                     , bytestring
+  default-language:    Haskell2010
+
+executable example-heisenberd-1d-exe
+  hs-source-dirs:      example
+  main-is:             Heisenberg1D.hs
+  ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprint-potential-instances
+  build-depends:       base
+                     , tcm-swarm
+                     , random >= 1.1
+                     , lens
+                     , mtl >= 2.2
+                     , hmatrix >= 0.18
+                     , vector >= 0.12
+                     , mersenne-random
+                     , mwc-random
+                     , bytestring
+                     , statistics
   default-language:    Haskell2010
 
 executable tcm-swarm-exe
@@ -34,16 +60,25 @@ executable tcm-swarm-exe
                      , lens
                      , mtl >= 2.2
                      , hmatrix >= 0.18
+                     , vector >= 0.12
+                     , mersenne-random
+                     , mwc-random
+                     , bytestring
   default-language:    Haskell2010
 
--- test-suite tcm-swarm-test
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test
---   main-is:             Spec.hs
---   build-depends:       base
---                      , tcm-swarm
---   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
---   default-language:    Haskell2010
+test-suite tcm-swarm-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  other-modules:       Numeric.VectorSpaceSpec
+  main-is:             Spec.hs
+  build-depends:       base
+                     , tcm-swarm
+                     , hspec
+                     , hspec-discover
+                     , vector >= 0.12
+                     , hmatrix >= 0.18
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
 
 source-repository head
   type:     git
