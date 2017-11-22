@@ -41,23 +41,23 @@ instance EncodableAsDecimal Double where
   encodeAsDecimal = doubleDec
 
 
-energies2TSV :: (EncodableAsDecimal a)
-             => (Bee p r g -> a) -> [Swarm m gen s g p r] -> LB.ByteString
+energies2TSV :: (EncodableAsDecimal t)
+             => (Bee α β r -> t) -> [Swarm m γ β α r] -> LB.ByteString
 energies2TSV func =
   let encodeSwarm = mconcat . intersperse (charUtf8 '\t')
         . map (encodeAsDecimal . func) . view bees
    in toLazyByteString . mconcat . intersperse (charUtf8 '\n')
         . map encodeSwarm
 
-variances2TSV :: (EncodableAsDecimal r, HasVar s r)
-             => [Swarm m gen s g p r] -> LB.ByteString
+variances2TSV :: (EncodableAsDecimal r, HasVar γ r)
+              => [Swarm m γ β α r] -> LB.ByteString
 variances2TSV = toLazyByteString . mconcat . intersperse (charUtf8 '\n')
-                . map (encodeAsDecimal . view (stats . var))
+                . map (encodeAsDecimal . view (guide . var))
 
-writeEnergies2TSV :: (EncodableAsDecimal a)
-  => FilePath -> (Bee p r g -> a) -> [Swarm m gen s g p r] -> IO ()
+writeEnergies2TSV :: (EncodableAsDecimal t)
+                  => FilePath -> (Bee α β r -> t) -> [Swarm m γ β α r] -> IO ()
 writeEnergies2TSV file func = LB.writeFile file . energies2TSV func
 
-writeVariances2TSV :: (EncodableAsDecimal r, HasVar s r)
-  => FilePath -> [Swarm m gen s g p r] -> IO ()
+writeVariances2TSV :: (EncodableAsDecimal r, HasVar γ r)
+                   => FilePath -> [Swarm m γ β α r] -> IO ()
 writeVariances2TSV file = LB.writeFile file . variances2TSV

@@ -14,7 +14,7 @@
 
 
 -- |
--- Module      : Rand
+-- Module      : PSO.Random
 -- Description : Uniform interface for "Control.Random.Mersenne" and
 --               "Control.Random.MWC"
 -- Description : Particle Swarm Optimisation
@@ -30,6 +30,7 @@ module PSO.Random
     , RandomScalable(..)
     , mkMTGen
     , mkMWCGen
+    , mkMWCGenST
     ) where
 
 import System.IO.Unsafe
@@ -48,40 +49,42 @@ import qualified System.Random.Mersenne as Mersenne
 import qualified System.Random.MWC as MWC
 
 
-class (PrimMonad m) => Generator g m where
+class (PrimMonad m) => Generator m g where
     create :: Maybe Word32 -> m g
 
-instance Generator Mersenne.MTGen IO where
+instance Generator IO Mersenne.MTGen where
     create = Mersenne.newMTGen
 
-instance Generator (MWC.Gen RealWorld) IO where
+instance Generator IO (MWC.Gen RealWorld) where
     create x = case x of
         (Just n) -> MWC.initialize . singleton $ n
         Nothing  -> MWC.create
 
-instance Generator (MWC.Gen s) (ST s) where
+instance Generator (ST s) (MWC.Gen s) where
     create x = case x of
         (Just n) -> MWC.initialize . singleton $ n
         Nothing  -> MWC.create
 
 
-class (Generator g m) => Randomisable a g m where
-    random :: g -> m a
+class (Monad m) => Randomisable m a where
+    random :: m a
 
 
-instance (Mersenne.MTRandom a) => Randomisable a Mersenne.MTGen IO where
-    random g = Mersenne.random g
+instance (Mersenne.MTRandom a)
+  => Randomisable (ReaderT Mersenne.MTGen IO) a where
+    random = ask >>= lift . Mersenne.random
 
-instance {-# OVERLAPS #-} (Num a, Randomisable a Mersenne.MTGen IO)
-  => Randomisable (Complex a) Mersenne.MTGen IO where
-    random g = liftM2 (:+) (random g) (random g)
+instance (MWC.Variate a)
+  => Randomisable (ReaderT (MWC.Gen RealWorld) IO) a where
+    random = ask >>= lift . MWC.uniform
 
-instance (MWC.Variate a) => Randomisable a (MWC.Gen RealWorld) IO where
-    random g = MWC.uniform g
+instance (MWC.Variate a)
+  => Randomisable (ReaderT (MWC.Gen s) (ST s)) a where
+    random = ask >>= lift . MWC.uniform
 
-instance {-# OVERLAPS #-} (Num a, Randomisable a (MWC.Gen RealWorld) IO)
-  => Randomisable (Complex a) (MWC.Gen RealWorld) IO where
-    random g = liftM2 (:+) (random g) (random g)
+instance {-# OVERLAPS #-} (MWC.Variate a)
+  => Randomisable (ReaderT (MWC.Gen RealWorld) IO) (Complex a) where
+    random = liftM2 (:+) random random
 
 
 mkMTGen :: Maybe Word32 -> IO Mersenne.MTGen
@@ -90,74 +93,67 @@ mkMTGen = create
 mkMWCGen :: Maybe Word32 -> IO MWC.GenIO
 mkMWCGen = create
 
-
-class (Generator g m) => UniformDist a g m where
-  uniform :: (a, a) -> g -> m a
-
-class (Generator g m) => RandomScalable a g m where
-  randScale :: a -> g -> m a
+mkMWCGenST :: Maybe Word32 -> ST s (MWC.GenST s)
+mkMWCGenST = create
 
 
-uniformFloating :: (Generator g m, RealFloat a, Randomisable a g m)
-                => (a, a) -> g -> m a
-uniformFloating (low, high) = random >=> (\r -> return $ low + (high - low) * r)
+class (Monad m) => UniformDist m a where
+  uniform :: (a, a) -> m a
+
+class (Monad m) => RandomScalable m a where
+  randScale :: a -> m a
 
 
-instance (Generator g m, Randomisable Float g m)
-  => UniformDist Float g m where
+uniformFloating :: (RealFloat a, Randomisable m a)
+  => (a, a) -> m a
+uniformFloating (low, high) = return (\x -> low + (high - low) * x) `ap` random
+
+
+instance (Monad m, Randomisable m Float) => UniformDist m Float where
     uniform = uniformFloating
 
-instance (Generator g m, Randomisable Double g m)
-  => UniformDist Double g m where
+instance (Monad m, Randomisable m Double) => UniformDist m Double where
     uniform = uniformFloating
 
-instance (Generator g m, Randomisable CFloat g m)
-  => UniformDist CFloat g m where
+instance (Monad m, Randomisable m CFloat) => UniformDist m CFloat where
     uniform = uniformFloating
 
-instance (Generator g m, Randomisable CDouble g m)
-  => UniformDist CDouble g m where
+instance (Monad m, Randomisable m CDouble) => UniformDist m CDouble where
     uniform = uniformFloating
 
+instance (RealFloat a, UniformDist m a)
+  => UniformDist m (Complex a) where
+    uniform ((rlow :+ ilow), (rhigh :+ ihigh)) =
+      liftM2 (:+) (uniform (rlow, rhigh)) (uniform (ilow, ihigh))
 
-instance (RealFloat a, UniformDist a g m)
-  => UniformDist (Complex a) g m where
-    uniform ((rlow :+ ilow), (rhigh :+ ihigh)) g =
-      liftM2 (:+) (uniform (rlow, rhigh) g) (uniform (ilow, ihigh) g)
+instance (UniformDist m a) => UniformDist m [a] where
+  uniform (low, high) = mapM uniform $ zip low high
 
-instance (UniformDist a g m) => UniformDist [a] g m where
-  uniform (low, high) g = mapM (\(l, h) -> uniform (l, h) g) $ zip low high
+instance (Foreign.Storable a, UniformDist m a)
+  => UniformDist m (V.Vector a) where
+    uniform (low, high) = V.zipWithM (\l h -> uniform (l, h)) low high
 
-instance (Foreign.Storable a, UniformDist a g m)
-  => UniformDist (V.Vector a) g m where
-    uniform (low, high) g = V.zipWithM (\l h -> uniform (l, h) g) low high
 
-randScaleFloating :: (RealFloat a, Generator g m,  Randomisable a g m)
-                  => a -> g -> m a
-randScaleFloating x = liftM (* x) . random
+randScaleFloating :: (RealFloat a, Randomisable m a) => a -> m a
+randScaleFloating x = liftM (* x) random
 
-instance (Generator g m, Randomisable Float g m)
-  => RandomScalable Float g m where
+instance (Monad m, Randomisable m Float) => RandomScalable m Float where
     randScale = randScaleFloating
 
-instance (Generator g m, Randomisable Double g m)
-  => RandomScalable Double g m where
+instance (Monad m, Randomisable m Double) => RandomScalable m Double where
     randScale = randScaleFloating
 
-instance (Generator g m, Randomisable CFloat g m)
-  => RandomScalable CFloat g m where
+instance (Monad m, Randomisable m CFloat) => RandomScalable m CFloat where
     randScale = randScaleFloating
 
-instance (Generator g m, Randomisable CDouble g m)
-  => RandomScalable CDouble g m where
+instance (Monad m, Randomisable m CDouble) => RandomScalable m CDouble where
     randScale = randScaleFloating
 
-instance {-# OVERLAPS #-} (Generator g m, RandomScalable a g m)
-  => RandomScalable (Complex a) g m where
-    randScale (x :+ y) g = return (:+) `ap` (randScale x g) `ap` (randScale y g)
+instance {-# OVERLAPS #-} (RandomScalable m a)
+  => RandomScalable m (Complex a) where
+    randScale (x :+ y) = return (:+) `ap` (randScale x) `ap` (randScale y)
 
-instance (Generator g m, RandomScalable a g m,
-  GV.Vector v a) => RandomScalable (v a) g m where
-    randScale x g = GV.mapM (flip randScale g) x
+instance (RandomScalable m a, GV.Vector v a) => RandomScalable m (v a) where
+    randScale = GV.mapM randScale
 
 
