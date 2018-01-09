@@ -14,69 +14,147 @@ extra-source-files:  README.md
 cabal-version:       >=1.10
 
 library
-  hs-source-dirs:      src
-  exposed-modules:     PSO.Swarm
-                     , PSO.VectorSpace
-                     , PSO.Random
-                     , PSO.Heisenberg
-                     , PSO.Energy
+  hs-source-dirs:   ./src
+  exposed-modules:   PSO.Internal.Neural
+                   , PSO.Neural
+                   , PSO.Random
+                   , PSO.Swarm
+                   , PSO.VectorSpace
+                   , PSO.Heisenberg
+                   , PSO.Energy
   build-depends:       base >= 4.7 && < 5
-                     , random >= 1.1
+                     , primitive
+                     , bytestring
+                     , vector
+                     , semigroups
+                     , mtl
                      , lens
-                     , mtl >= 2.2
-                     , hmatrix >= 0.18
                      , mersenne-random
                      , mwc-random
-                     , primitive >= 0.6
-                     , vector >= 0.12
+                     , hmatrix
+                     , NumInstances
                      , storable-tuple
-                     , bytestring
+                     , pipes
+                     , folds
+                     , derive-storable
+  extra-libraries: mkl_rt, neural
+  build-tools: c2hs
+  ghc-options: -O2 -fprof-auto -fprof-cafs
+  include-dirs: /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/include
+              , cbits
+  extra-lib-dirs: /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/lib/intel64
+                , /home/tom/tcm-swarm
   default-language:    Haskell2010
 
-executable example-heisenberd-1d-exe
-  hs-source-dirs:      example
-  main-is:             Heisenberg1D.hs
-  ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprint-potential-instances
+-- executable mcmc-exe
+--   hs-source-dirs:      example
+--   main-is:             mcmc.hs
+--   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto
+--   build-depends:       base
+--                      , tcm-swarm
+--                      , semigroups
+--                      , lens
+--                      , mtl
+--                      , hmatrix
+--                      , mersenne-random
+--                      , mwc-random
+--                      , primitive
+--                      , vector
+--                      , storable-tuple
+--                      , bytestring
+--                      , pipes
+--                      , folds
+--   default-language:    Haskell2010
+-- 
+-- executable example-heisenberd-1d-exe
+--   hs-source-dirs:      example
+--   main-is:             Heisenberg1D.hs
+--   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto
+--   build-depends:       base
+--                      , tcm-swarm
+--                      , semigroups >= 0.18.3
+--                      , lens >= 4.15.4
+--                      , mtl >= 2.2
+--                      , hmatrix >= 0.18
+--                      , mersenne-random
+--                      , mwc-random
+--                      , primitive >= 0.6
+--                      , vector >= 0.12
+--                      , storable-tuple
+--                      , bytestring
+--                      , pipes
+--                      , folds
+--                      , statistics
+--   default-language:    Haskell2010
+
+executable example-ffi-exe
+  hs-source-dirs:      example/ffi
+  ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto -fprof-cafs
+  main-is:             fib.hs
   build-depends:       base
                      , tcm-swarm
-                     , random >= 1.1
-                     , lens
-                     , mtl >= 2.2
-                     , hmatrix >= 0.18
-                     , vector >= 0.12
-                     , mersenne-random
-                     , mwc-random
-                     , bytestring
-                     , statistics
+                     , mtl
+                     , vector
+  extra-libraries: mkl_rt, neural
+  include-dirs: /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/include
+              , cbits
+  extra-lib-dirs: /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/lib/intel64
+                , /home/tom/tcm-swarm
   default-language:    Haskell2010
 
-executable tcm-swarm-exe
-  hs-source-dirs:      app
-  main-is:             Main.hs
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+executable heisenberd-1d
+  hs-source-dirs:      example/hh1d
+  main-is:             hh1dopen.hs
+  ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto -fprof-cafs
   build-depends:       base
                      , tcm-swarm
-                     , random >= 1.1
                      , lens
-                     , mtl >= 2.2
-                     , hmatrix >= 0.18
-                     , vector >= 0.12
+                     , mtl
+                     , hmatrix
                      , mersenne-random
                      , mwc-random
+                     , primitive
+                     , vector
                      , bytestring
+                     , pipes
+                     , folds
+  extra-libraries:     mkl_rt
+                     , neural
+  include-dirs:        /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/include
+                     , cbits
+  extra-lib-dirs:      /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/lib/intel64
+                     , /home/tom/tcm-swarm
   default-language:    Haskell2010
+
+-- executable tcm-swarm-exe
+--   hs-source-dirs:      app
+--   main-is:             Main.hs
+--   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+--   build-depends:       base
+--                      , tcm-swarm
+--                      , random >= 1.1
+--                      , lens
+--                      , mtl >= 2.2
+--                      , hmatrix >= 0.18
+--                      , vector >= 0.12
+--                      , mersenne-random
+--                      , mwc-random
+--                      , bytestring
+--                      , conduit
+--   default-language:    Haskell2010
 
 test-suite tcm-swarm-test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
-  other-modules:       Numeric.VectorSpaceSpec
+  other-modules:       PSO.NeuralSpec
   main-is:             Spec.hs
   build-depends:       base
                      , tcm-swarm
                      , hspec
                      , hspec-discover
-                     , vector >= 0.12
-                     , hmatrix >= 0.18
+                     , vector
+                     , hmatrix
+                     , mtl
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 

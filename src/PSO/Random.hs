@@ -31,22 +31,29 @@ module PSO.Random
     , mkMTGen
     , mkMWCGen
     , mkMWCGenST
+    , uniformList
+    , uniformVector
+    , uniformMatrix
+    , randomSpin
     ) where
 
 import System.IO.Unsafe
-import Data.Word(Word32)
+import Data.Word(Word8,Word32)
 import Data.Proxy
 import Data.Complex(Complex(..))
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Control.Monad.Reader
 import Data.Vector(singleton)
+import GHC.Float
 import qualified Data.Vector.Storable as V
 import qualified Data.Vector.Generic as GV
 import Foreign.C.Types(CDouble, CFloat)
 import qualified Foreign
 import qualified System.Random.Mersenne as Mersenne
 import qualified System.Random.MWC as MWC
+import Numeric.LinearAlgebra.Devel(mapMatrixWithIndexM)
+import qualified Numeric.LinearAlgebra as LA
 
 
 class (PrimMonad m) => Generator m g where
@@ -73,6 +80,9 @@ class (Monad m) => Randomisable m a where
 instance (Mersenne.MTRandom a)
   => Randomisable (ReaderT Mersenne.MTGen IO) a where
     random = ask >>= lift . Mersenne.random
+
+instance {-# OVERLAPS #-} Randomisable (ReaderT Mersenne.MTGen IO) Float where
+  random = ask >>= lift . liftM double2Float . Mersenne.random
 
 instance (MWC.Variate a)
   => Randomisable (ReaderT (MWC.Gen RealWorld) IO) a where
@@ -108,6 +118,16 @@ uniformFloating :: (RealFloat a, Randomisable m a)
   => (a, a) -> m a
 uniformFloating (low, high) = return (\x -> low + (high - low) * x) `ap` random
 
+uniformIntegralMWC ::
+     (Integral a, MWC.Variate a, PrimMonad m)
+  => (a, a) -> ReaderT (MWC.Gen (PrimState m)) m a
+uniformIntegralMWC bounds = ask >>= lift . MWC.uniformR bounds
+
+uniformIntegralMT ::
+     (Integral a, Bounded a, Mersenne.MTRandom a)
+  => (a, a) -> ReaderT Mersenne.MTGen IO a
+uniformIntegralMT (low, high) = ask >>= lift . Mersenne.random >>= \x ->
+  return $ low + x `mod` (high - low + 1)
 
 instance (Monad m, Randomisable m Float) => UniformDist m Float where
     uniform = uniformFloating
@@ -133,6 +153,17 @@ instance (Foreign.Storable a, UniformDist m a)
   => UniformDist m (V.Vector a) where
     uniform (low, high) = V.zipWithM (\l h -> uniform (l, h)) low high
 
+instance UniformDist (ReaderT (MWC.Gen RealWorld) IO) Word8 where
+    uniform = uniformIntegralMWC
+
+instance UniformDist (ReaderT (MWC.Gen RealWorld) IO) Int where
+    uniform = uniformIntegralMWC
+
+instance UniformDist (ReaderT Mersenne.MTGen IO) Word8 where
+    uniform = uniformIntegralMT
+
+instance UniformDist (ReaderT Mersenne.MTGen IO) Int where
+    uniform = uniformIntegralMT
 
 randScaleFloating :: (RealFloat a, Randomisable m a) => a -> m a
 randScaleFloating x = liftM (* x) random
@@ -153,7 +184,44 @@ instance {-# OVERLAPS #-} (RandomScalable m a)
   => RandomScalable m (Complex a) where
     randScale (x :+ y) = return (:+) `ap` (randScale x) `ap` (randScale y)
 
-instance (RandomScalable m a, GV.Vector v a) => RandomScalable m (v a) where
-    randScale = GV.mapM randScale
+instance (Monad m, Foreign.Storable a, RandomScalable m a)
+  => RandomScalable m (V.Vector a) where
+    randScale = V.mapM randScale
 
+-- liftMatrixM ::
+--      ( Monad m
+--      , LA.Element α
+--      , LA.Element β
+--      )
+--   => (V.Vector α -> m (V.Vector β)) -> LA.Matrix α -> m (LA.Matrix β)
+-- liftMatrixM f m@Matrix { irows = r, icols = c, xdat = d}
+--     | isSlice m = matrixFromVector RowMajor r c (f (flatten m))
+--     | otherwise = matrixFromVector (orderOf m) r c (f d)
 
+instance (Monad m, LA.Element a, Foreign.Storable a, RandomScalable m a)
+  => RandomScalable m (LA.Matrix a) where
+    randScale = mapMatrixWithIndexM (const randScale)
+
+-- instance (RandomScalable m a, GV.Vector v a) => RandomScalable m (v a) where
+--     randScale = GV.mapM randScale
+
+uniformList :: (Monad m, UniformDist m a) => Int -> (a, a) -> m [a]
+uniformList n bounds = replicateM n (uniform bounds)
+
+uniformVector ::
+     (Monad m, Foreign.Storable a, UniformDist m a)
+  => Int -> (a, a) -> m (V.Vector a)
+uniformVector n = liftM V.fromList . uniformList n
+
+uniformMatrix ::
+     (Monad m, Foreign.Storable a, UniformDist m a)
+  => (Int, Int) -> (a, a) -> m (LA.Matrix a)
+uniformMatrix (m, n) = liftM (uncurry (LA.><) (m, n)) . uniformList (n*m)
+
+randomSpin ::
+     (Monad m, Foreign.Storable a, Num a, Randomisable m Bool)
+  => Int -> m (V.Vector a)
+randomSpin n =
+  let fromBool True  = 1
+      fromBool False = (-1)
+   in V.replicateM n (fromBool <$> random)

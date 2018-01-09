@@ -6,6 +6,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_HADDOCK show-extensions #-}
 
 -- |
@@ -109,6 +110,9 @@ module PSO.Swarm
   , fromPure
   , iterateNM
   , iterateWhileM
+  , Absorbable(..)
+  , DeltaWell(..)
+  , Scalable(..)
 
     -- * Lenses
   , HasPos(..)
@@ -142,6 +146,8 @@ import Foreign.Storable.Tuple
 import GHC.Float (float2Double)
 
 import qualified Numeric.LinearAlgebra as LA
+import Numeric.LinearAlgebra.Devel(matrixFromVector, orderOf, MatrixOrder(..))
+import Numeric.LinearAlgebra.Data(flatten, tr)
 import qualified Numeric.LinearAlgebra.Devel as LADevel
 
 import PSO.VectorSpace
@@ -525,6 +531,27 @@ instance (Monad m, Foreign.Storable ξ, DeltaWell m λ ξ)
   => DeltaWell m λ (V.Vector ξ) where
     upDeltaWell κ p x = V.zipWithM (upDeltaWell κ) p x
 
+liftMatrix2M ::
+     (Monad m, LA.Element α, LA.Element β, LA.Element γ,
+      LA.Container V.Vector α, Num α,
+      LA.Container V.Vector β, Num β,
+      LA.Transposable (LA.Matrix α) (LA.Matrix α),
+      LA.Transposable (LA.Matrix β) (LA.Matrix β))
+  => (LA.Vector α -> LA.Vector β -> m (LA.Vector γ))
+  -> LA.Matrix α -> LA.Matrix β -> m (LA.Matrix γ)
+liftMatrix2M f m1@(LA.size -> (r,c)) m2
+  | LA.size m1 /= LA.size m2 = error "nonconformant matrices in liftMatrix2M"
+  | orderOf m1 == RowMajor =
+      return (matrixFromVector RowMajor r c) `ap` f (flatten m1) (flatten m2)
+  | otherwise =
+      return (matrixFromVector ColumnMajor r c) `ap`
+        f (flatten . tr $ m1) (flatten . tr $ m2)
+
+instance (Monad m, Num ξ, LA.Container V.Vector ξ, LA.Transposable (LA.Matrix ξ)(LA.Matrix ξ), DeltaWell m λ ξ)
+  => DeltaWell m λ (LA.Matrix ξ) where
+    upDeltaWell κ = liftMatrix2M (V.zipWithM (upDeltaWell κ))
+
+
 -- | Creates a QDPSO updater.
 deltaUpdater :: forall m g γ β χ λ r.
      ( Randomisable m λ
@@ -803,12 +830,12 @@ optimiseND ::
      )
   => m α
   -> PhaseUpdater m γ β α r
-  -> (χ -> r)
+  -> (α -> m r)
   -> Int
   -> (Swarm m γ β α r -> Bool)
   -> m [Swarm m γ β α r]
 optimiseND newState updater func n predicate = do
-  swarm <- mkSwarm newState updater (fromPure func) n
+  swarm <- mkSwarm newState updater func n
   iterateWhileM (not . predicate) updateSwarm swarm
 
 

@@ -1,11 +1,14 @@
-flags: {}
+flags:
+  mersenne-random:
+    use_sse2: true
 extra-package-dbs: []
 packages:
   - .
 extra-deps:
   - mersenne-random-1.0.0.1
   - algebra-4.3
-resolver: lts-9.11
+  - derive-storable-0.1.1.1
+resolver: lts-9.18
 
 build:
   haddock-arguments:

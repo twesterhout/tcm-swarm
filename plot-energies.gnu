@@ -13,8 +13,8 @@ set xlabel "Iteration"
 
 plot for [i = 1:*] \
     "Energies.dat" using 0:i \
-    with points pointtype 7 pointsize 0.3 \
-    linecolor rgb "#303030" notitle
+    with linespoints pointtype 7 pointsize 0.3 # \
+# linecolor rgb "#303030" notitle
 
 set output
 set terminal x11
