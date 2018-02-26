@@ -66,26 +66,26 @@ library
 --                      , folds
 --   default-language:    Haskell2010
 -- 
--- executable example-heisenberd-1d-exe
---   hs-source-dirs:      example
---   main-is:             Heisenberg1D.hs
---   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto
---   build-depends:       base
---                      , tcm-swarm
---                      , semigroups >= 0.18.3
---                      , lens >= 4.15.4
---                      , mtl >= 2.2
---                      , hmatrix >= 0.18
---                      , mersenne-random
---                      , mwc-random
---                      , primitive >= 0.6
---                      , vector >= 0.12
---                      , storable-tuple
---                      , bytestring
---                      , pipes
---                      , folds
---                      , statistics
---   default-language:    Haskell2010
+executable example-heisenberd-1d-exe
+  hs-source-dirs:      example
+  main-is:             Heisenberg1D.hs
+  ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto
+  build-depends:       base
+                     , tcm-swarm
+                     , semigroups >= 0.18.3
+                     , lens >= 4.15.4
+                     , mtl >= 2.2
+                     , hmatrix >= 0.18
+                     , mersenne-random
+                     , mwc-random
+                     , primitive >= 0.6
+                     , vector >= 0.12
+                     , storable-tuple
+                     , bytestring
+                     , pipes
+                     , folds
+                     , statistics
+  default-language:    Haskell2010
 
 executable example-ffi-exe
   hs-source-dirs:      example/ffi
@@ -95,6 +95,7 @@ executable example-ffi-exe
                      , tcm-swarm
                      , mtl
                      , vector
+                     , optparse-applicative
   extra-libraries: mkl_rt, neural
   include-dirs: /opt/intel/compilers_and_libraries_2018.0.128/linux/mkl/include
               , cbits
@@ -116,6 +117,7 @@ executable heisenberd-1d
                      , primitive
                      , vector
                      , bytestring
+                     , NumInstances
                      , pipes
                      , folds
   extra-libraries:     mkl_rt
