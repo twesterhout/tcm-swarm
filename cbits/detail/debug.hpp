@@ -10,37 +10,35 @@ TCM_SWARM_BEGIN_NAMESPACE
 namespace detail {
 
 struct Tracer {
-    char const* const _at_enter;
-    char const* const _at_exit;
+    char const* const _name;
 
-    Tracer(char const* at_enter, char const* at_exit)
-        : _at_enter{at_enter}, _at_exit{at_exit}
+    Tracer(char const* name)
+        : _name{name}
     {
-        std::fprintf(stderr, "%s\n", _at_enter);
+        std::fprintf(stderr, "<%s>\n", _name);
         std::fflush(stderr);
     }
 
     ~Tracer()
     {
-        std::fprintf(stderr, "%s\n", _at_exit);
+        std::fprintf(stderr, "</%s>\n", _name);
         std::fflush(stderr);
     }
 };
+
+} // namespace detail
 
 #if defined(DO_TRACE)
 #define TRACE()                                                      \
     ::TCM_SWARM_NAMESPACE::detail::Tracer _temp_tracer               \
     {                                                                \
-        "<" TCM_SWARM_CURRENT_FUNCTION ">",                          \
-            "</" TCM_SWARM_CURRENT_FUNCTION ">"                      \
+        TCM_SWARM_CURRENT_FUNCTION                                   \
     }
 #else
 #define TRACE()                                                      \
     do {                                                             \
     } while (false)
 #endif
-
-} // namespace detail
 
 TCM_SWARM_END_NAMESPACE
 

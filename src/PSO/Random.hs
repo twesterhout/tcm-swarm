@@ -65,7 +65,7 @@ instance Generator IO Mersenne.MTGen where
 instance Generator IO (MWC.Gen RealWorld) where
     create x = case x of
         (Just n) -> MWC.initialize . singleton $ n
-        Nothing  -> MWC.create
+        Nothing  -> MWC.createSystemRandom
 
 instance Generator (ST s) (MWC.Gen s) where
     create x = case x of

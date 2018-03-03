@@ -214,6 +214,11 @@ struct momenta_accumulator {
             return _M<P>() / _n;
         }
     }
+
+    constexpr auto count() const noexcept -> std::size_t
+    {
+        return _n;
+    }
 };
 
 TCM_SWARM_END_NAMESPACE

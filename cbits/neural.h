@@ -36,7 +36,6 @@
 extern "C" {
 #endif
 
-#include <complex.h>
 #include <stddef.h>
 
 #include <mkl_types.h>
@@ -57,19 +56,24 @@ typedef struct tcm_dMCMC tcm_dMCMC;
 typedef struct tcm_cMCMC tcm_cMCMC;
 typedef struct tcm_zMCMC tcm_zMCMC;
 
+typedef struct tcm_sMeasurement {
+    float mean;
+    float var;
+} tcm_sMeasurement;
+
 // RBM
 // ===================================================================
 
 // RbmState<T>::RbmState(size_type, size_type)
 // -------------------------------------------------------------------
 
-tcm_cRBM* tcm_sRBM_Create(tcm_size_type const size_visible,
+tcm_sRBM* tcm_sRBM_Create(tcm_size_type const size_visible,
     tcm_size_type const                       size_hidden);
-tcm_cRBM* tcm_dRBM_Create(tcm_size_type const size_visible,
+tcm_dRBM* tcm_dRBM_Create(tcm_size_type const size_visible,
     tcm_size_type const                       size_hidden);
 tcm_cRBM* tcm_cRBM_Create(tcm_size_type const size_visible,
     tcm_size_type const                       size_hidden);
-tcm_cRBM* tcm_zRBM_Create(tcm_size_type const size_visible,
+tcm_zRBM* tcm_zRBM_Create(tcm_size_type const size_visible,
     tcm_size_type const                       size_hidden);
 
 // RbmState<T>::RbmState(RbmState const&)
@@ -124,30 +128,6 @@ void tcm_cRBM_Set_hidden(
 void tcm_zRBM_Set_hidden(
     tcm_zRBM* const rbm, tcm_Complex16 const* const hidden);
 
-// axpby(C, RbmState<T> const&, C, RbmState<T>&)
-// -------------------------------------------------------------------
-
-void tcm_sRBM_saxpby(float const alpha, tcm_sRBM const* const x,
-    float const beta, tcm_sRBM* const y);
-void tcm_dRBM_daxpby(double const alpha, tcm_sRBM const* const x,
-    double const beta, tcm_sRBM* const y);
-void tcm_cRBM_caxpby(float const alpha_r, float const alpha_i,
-    tcm_cRBM const* const x, float const beta_r, float const beta_i,
-    tcm_cRBM* const y);
-void tcm_zRBM_zaxpby(double const alpha_r, double const alpha_i,
-    tcm_zRBM const* const x, double const beta_r, double const beta_i,
-    tcm_zRBM* const y);
-
-// scale(C, RbmState<T>&)
-// -------------------------------------------------------------------
-
-void tcm_sRBM_sscale(float const alpha, tcm_sRBM* const x);
-void tcm_dRBM_dscale(double const alpha, tcm_dRBM* const x);
-void tcm_cRBM_cscale(
-    float const alpha_r, float const alpha_i, tcm_cRBM* const x);
-void tcm_zRBM_zscale(
-    double const alpha_r, double const alpha_i, tcm_zRBM* const x);
-
 // RbmState<T>::size_visible()
 // -------------------------------------------------------------------
 
@@ -171,6 +151,30 @@ void tcm_sRBM_Print(tcm_sRBM const* rbm);
 void tcm_dRBM_Print(tcm_dRBM const* rbm);
 void tcm_cRBM_Print(tcm_cRBM const* rbm);
 void tcm_zRBM_Print(tcm_zRBM const* rbm);
+
+// axpby(C, RbmState<T> const&, C, RbmState<T>&)
+// -------------------------------------------------------------------
+
+void tcm_sRBM_saxpby(float const alpha, tcm_sRBM const* const x,
+    float const beta, tcm_sRBM* const y);
+void tcm_dRBM_daxpby(double const alpha, tcm_sRBM const* const x,
+    double const beta, tcm_sRBM* const y);
+void tcm_cRBM_caxpby(float const alpha_r, float const alpha_i,
+    tcm_cRBM const* const x, float const beta_r, float const beta_i,
+    tcm_cRBM* const y);
+void tcm_zRBM_zaxpby(double const alpha_r, double const alpha_i,
+    tcm_zRBM const* const x, double const beta_r, double const beta_i,
+    tcm_zRBM* const y);
+
+// scale(C, RbmState<T>&)
+// -------------------------------------------------------------------
+
+void tcm_sRBM_sscale(float const alpha, tcm_sRBM* const x);
+void tcm_dRBM_dscale(double const alpha, tcm_dRBM* const x);
+void tcm_cRBM_cscale(
+    float const alpha_r, float const alpha_i, tcm_cRBM* const x);
+void tcm_zRBM_zscale(
+    double const alpha_r, double const alpha_i, tcm_zRBM* const x);
 
 // delta_well_update(C, RbmState<T>&, RbmState<T> const&, C const*)
 // -------------------------------------------------------------------
@@ -255,10 +259,11 @@ void tcm_zMCMC_Print(tcm_zMCMC const* mcmc);
 // heisenberg_1d(McmcState<T> const&)
 // -------------------------------------------------------------------
 
-void tcm_cHH1DOpen_Local_energy(
-    tcm_cMCMC const* mcmc, tcm_Complex8* out);
-void tcm_zHH1DOpen_Local_energy(
-    tcm_zMCMC const* mcmc, tcm_Complex16* out);
+void tcm_cHH1DOpen_Local_energy(tcm_cMCMC const* mcmc, tcm_Complex8* out);
+void tcm_zHH1DOpen_Local_energy(tcm_zMCMC const* mcmc, tcm_Complex16* out);
+
+void tcm_cRBM_mcmc_block(tcm_cRBM* rbm, tcm_size_type const offset,
+    tcm_size_type const steps, tcm_sMeasurement* out);
 
 #if defined(__cplusplus)
 } // extern "C"

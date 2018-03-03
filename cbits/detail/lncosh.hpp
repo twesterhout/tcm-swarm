@@ -66,7 +66,7 @@ struct lncosh_fn {
 
     auto operator()(double const x) const noexcept -> double
     {
-        constexpr auto const threshold = 15.0;
+        constexpr auto const threshold = 12.0;
         if (std::abs(x) > threshold) { return x - ln2<double>; }
         return std::log(std::cosh(x));
     }
@@ -84,7 +84,7 @@ struct lncosh_fn {
 };
 
 /// \brief Computes unconjugated product of two vectors.
-TCM_SWARM_INLINE_VARIABLE(lncosh_fn, lncosh);
+TCM_SWARM_INLINE_VARIABLE(lncosh_fn, lncosh)
 
 } // namespace mkl
 TCM_SWARM_END_NAMESPACE

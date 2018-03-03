@@ -94,7 +94,7 @@ struct copy_fn {
 };
 
 /// \brief Copies first vector into the second.
-TCM_SWARM_INLINE_VARIABLE(copy_fn, copy);
+TCM_SWARM_INLINE_VARIABLE(copy_fn, copy)
 
 } // namespace mkl
 TCM_SWARM_END_NAMESPACE

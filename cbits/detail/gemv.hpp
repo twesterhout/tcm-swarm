@@ -96,7 +96,7 @@ struct gemv_fn {
 };
 
 /// \brief Computes matrix-vector product.
-TCM_SWARM_INLINE_VARIABLE(gemv_fn, gemv);
+TCM_SWARM_INLINE_VARIABLE(gemv_fn, gemv)
 
 } // namespace mkl
 TCM_SWARM_END_NAMESPACE

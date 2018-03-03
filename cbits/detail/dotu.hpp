@@ -103,7 +103,7 @@ struct dotu_fn {
 };
 
 /// \brief Computes unconjugated product of two vectors.
-TCM_SWARM_INLINE_VARIABLE(dotu_fn, dotu);
+TCM_SWARM_INLINE_VARIABLE(dotu_fn, dotu)
 
 } // namespace mkl
 TCM_SWARM_END_NAMESPACE

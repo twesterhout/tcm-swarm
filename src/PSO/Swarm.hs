@@ -96,6 +96,7 @@ module PSO.Swarm
   , mkCMState
   , mkQMState
   , optimiseND
+  , optimiseNDFromList
 
     -- * Details
   , VelocityUpdater(..)
@@ -282,7 +283,7 @@ mean xs = sum xs / fromIntegral (length xs)
 
 -- | Calculates the variance in a sequence.
 variance :: (Fractional a, Foldable v, Functor v) => v a -> a
-variance xs = (mean . fmap (^^2) $ xs) - (mean xs)^^2
+variance xs = let m = mean xs in mean . fmap (\x -> (x - m)^^2) $ xs
 
 -- | 'SwarmGuide' is another example of a 'GlobalGuide'. On top of keeping track
 -- of the best position and its fitness value (what 'BeeGuide' does), we
@@ -714,6 +715,16 @@ mkSwarm newState updater func n = (sequence . replicate n $ newState) >>=
   mapM (mkBee func) >>= \xs ->
     return $ Swarm xs (mkGlobalG xs) func updater
 
+mkSwarmFromList ::
+     (Monad m, GlobalGuide γ β α r)
+  => [α]
+  -> PhaseUpdater m γ β α r
+  -> (α -> m r)
+  -> m (Swarm m γ β α r)
+mkSwarmFromList states updater func =
+  mapM (mkBee func) states >>= \xs ->
+    return $ Swarm xs (mkGlobalG xs) func updater
+
 fromPure :: (Monad m, HasPos α χ) => (χ -> r) -> α -> m r
 fromPure f ψ = return $ f (ψ ^. pos)
 -- 
@@ -838,4 +849,17 @@ optimiseND newState updater func n predicate = do
   swarm <- mkSwarm newState updater func n
   iterateWhileM (not . predicate) updateSwarm swarm
 
+optimiseNDFromList ::
+     ( Monad m
+     , HasPos α χ
+     , GlobalGuide γ β α r
+     )
+  => [α]
+  -> PhaseUpdater m γ β α r
+  -> (α -> m r)
+  -> (Swarm m γ β α r -> Bool)
+  -> m [Swarm m γ β α r]
+optimiseNDFromList states updater func predicate = do
+  swarm <- mkSwarmFromList states updater func
+  iterateWhileM (not . predicate) updateSwarm swarm
 

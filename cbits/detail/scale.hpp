@@ -99,7 +99,7 @@ struct scale_fn {
 };
 
 /// \brief Scales the vector with the given constant.
-TCM_SWARM_INLINE_VARIABLE(scale_fn, scale);
+TCM_SWARM_INLINE_VARIABLE(scale_fn, scale)
 
 } // namespace mkl
 TCM_SWARM_END_NAMESPACE

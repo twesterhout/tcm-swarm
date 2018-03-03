@@ -89,7 +89,7 @@ struct axpby_fn {
 };
 
 /// \brief Performs the assignment `y := alpha * x + beta * y`
-TCM_SWARM_INLINE_VARIABLE(axpby_fn, axpby);
+TCM_SWARM_INLINE_VARIABLE(axpby_fn, axpby)
 
 } // namespace mkl
 TCM_SWARM_END_NAMESPACE
