@@ -10,3 +10,6 @@
 [submodule "external/Vc"]
 	path = external/Vc
 	url = https://github.com/VcDevel/Vc
+[submodule "external/range-v3"]
+	path = external/range-v3
+	url = https://github.com/ericniebler/range-v3
