@@ -182,18 +182,15 @@ struct momenta_accumulator {
     {
     }
 
-    auto operator()(T const next_sample) noexcept -> void
+    auto operator()(T const next_sample) -> void
     {
         ++_n;
-
         auto const y     = static_cast<R>(next_sample);
         auto const delta = y - _mu();
-
         if (_n == 1) {
             _mu() = y;
             return;
         }
-
         auto const d = delta / static_cast<R>(_n);
         if constexpr (N > 2) {
             _call(d, std::make_index_sequence<N - 2>{});
