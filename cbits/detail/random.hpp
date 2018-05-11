@@ -32,25 +32,147 @@
 #ifndef TCM_SWARM_DETAIL_RANDOM_HPP
 #define TCM_SWARM_DETAIL_RANDOM_HPP
 
-#include <cstdio>
+#include <complex>
 #include <random>
 
-#include "../detail/config.hpp"
-#include "../detail/mkl.hpp"
+#include <gsl/gsl>
 
-#include <gsl/pointers>
-#include <gsl/span>
+#include "../spin.hpp"
+
+#if defined(TCM_SWARM_CLANG)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wold-style-cast"
+#pragma clang diagnostic ignored "-Wdocumentation"
+#elif defined(TCM_SWARM_GCC)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wnoexcept"
+#endif
+
+#include <range/v3/view/generate.hpp>
+
+#if defined(TCM_SWARM_CLANG)
+#pragma clang diagnostic pop
+#elif defined(TCM_SWARM_GCC)
+#pragma GCC diagnostic pop
+#endif
 
 TCM_SWARM_BEGIN_NAMESPACE
 
+auto really_need_that_random_seed_now() -> std::uint64_t;
+auto& thread_local_generator();
+
+/// \rst
+/// Returns a "truly" random seed (generated using `random_device`_).
+///
+/// .. note::
+///
+///    Please, use this function sparingly as it is probably very slow.
+///
+/// \endrst
 TCM_SWARM_NOINLINE
 auto really_need_that_random_seed_now() -> std::uint64_t
 {
     static thread_local std::random_device random_device;
-    static thread_local std::uniform_int_distribution<std::uint64_t> dist;
+    std::uniform_int_distribution<std::uint64_t> dist;
     return dist(random_device);
 }
 
+/// \rst
+/// Returns a reference to current thread's `UniformRandomBitGenerator`_.
+/// \endrst
+TCM_SWARM_NOINLINE
+auto& thread_local_generator()
+{
+    static thread_local std::mt19937 generator{really_need_that_random_seed_now()};
+    return generator;
+}
+
+/// \rst
+/// Creates a random spin configuration of given size, where spins are
+/// repsesented by complex numbers: :math:`\downarrow \equiv -1 + 0i` and
+/// :math:`\uparrow \equiv 1 + 0i`.
+/// \endrst
+template <class VectorType, class IndexType,
+    class Generator = std::decay_t<decltype(thread_local_generator())>,
+    class           = std::enable_if_t<std::is_integral_v<IndexType>>>
+auto make_random_spin(IndexType const n,
+    Generator& gen = thread_local_generator()) -> VectorType
+{
+    using std::begin, std::end;
+    using C         = typename VectorType::value_type;
+    using R         = typename C::value_type;
+    using size_type = typename VectorType::size_type;
+    if (n < 0) {
+        throw std::domain_error{
+            "Can't create a spin configuration with a negative ("
+            + std::to_string(n) + ") number of spins."};
+    }
+    if (n == 0) { return {}; }
+
+    VectorType spin(gsl::narrow_cast<size_type>(n));
+    std::uniform_int_distribution<int> dist{0, 1};
+    std::generate(begin(spin), end(spin), [&gen, &dist]() -> C {
+        return {R{2} * gsl::narrow<R>(dist(gen)) - R{1}, 0};
+    });
+    Ensures(TCM_SWARM_IS_VALID_SPIN(gsl::span<C const>{spin}));
+    return spin;
+}
+
+template <class VectorType, class IndexType,
+    class Generator = std::decay_t<decltype(thread_local_generator())>,
+    class           = std::enable_if_t<std::is_integral_v<IndexType>>>
+auto make_random_spin(IndexType const n, IndexType const magnetisation,
+    Generator& gen = thread_local_generator()) -> VectorType
+{
+    using std::begin, std::end;
+    using C         = typename VectorType::value_type;
+    using R         = typename C::value_type;
+    using size_type = typename VectorType::size_type;
+    if (n < 0) {
+        throw std::domain_error{
+            "Can't create a spin configuration with a negative ("
+            + std::to_string(n) + ") number of spins."};
+    }
+    if (std::abs(magnetisation) > n) {
+        throw std::domain_error{
+            std::to_string(n)
+            + " spins can't have a total magnetisation of "
+            + std::to_string(magnetisation) + "."};
+    }
+    if ((n + magnetisation) % 2 != 0) {
+        throw std::domain_error{
+            std::to_string(n)
+            + " spins can't have a total magnetisation of "
+            + std::to_string(magnetisation)
+            + ". `n + magnetisation` must be even."};
+    }
+    if (n == 0) { return {}; }
+    auto const number_ups   = (n + magnetisation) / 2;
+    auto const number_downs = (n - magnetisation) / 2;
+    VectorType spin(gsl::narrow_cast<size_type>(n));
+    std::fill_n(begin(spin), number_ups, C{1});
+    std::fill_n(begin(spin) + number_ups, number_downs, C{-1});
+    std::shuffle(begin(spin), end(spin), gen);
+    Ensures(TCM_SWARM_CHECK_MAGNETISATION(
+        gsl::span<C const>{spin}, magnetisation));
+    return spin;
+}
+
+#if 0
+template <class R, class Generator>
+auto uniform_float_stream(Generator& generator = thread_local_generator())
+{
+    return ranges::view::generate([&generator]() -> R {
+        std::uniform_real_distribution<R> dist{0, 1};
+        return dist(generator);
+    });
+}
+#endif
+
+#if 0
 namespace mkl {
 
 enum class GenType : MKL_INT {
@@ -118,7 +240,8 @@ struct random_generator {
 
     random_generator(random_generator const&) = delete;
 
-    constexpr random_generator(random_generator&& other) noexcept
+    constexpr random_generator(random_generator&& other) noexcept(
+        !tcm::detail::gsl_can_throw())
         : _handle{other._handle}
     {
         Expects(other._handle != nullptr);
@@ -127,7 +250,7 @@ struct random_generator {
     }
 
     random_generator& operator=(random_generator const&) = delete;
-    constexpr random_generator& operator=(random_generator&&) noexcept = delete;
+    random_generator& operator=(random_generator&&) noexcept = delete;
 
     constexpr auto get() -> gsl::not_null<state_ptr_t>
     {
@@ -156,7 +279,7 @@ namespace detail {
     auto uniform(std::underlying_type_t<Method> const method,
         random_generator::state_ptr_t const stream,
         difference_type const n, float* const r, float const a,
-        float const b)
+        float const b) noexcept
     // clang-format on
     {
         return vsRngUniform(method, stream, n, r, a, b);
@@ -168,7 +291,7 @@ namespace detail {
     auto uniform(std::underlying_type_t<Method> const method,
         random_generator::state_ptr_t const stream,
         difference_type const n, double* const r, double const a,
-        double const b)
+        double const b) noexcept
     // clang-format on
     {
         return vdRngUniform(method, stream, n, r, a, b);
@@ -179,7 +302,7 @@ namespace detail {
     auto uniform(std::underlying_type_t<Method> const method,
         random_generator::state_ptr_t const stream,
         difference_type const n, int* const r, int const a,
-        int const b)
+        int const b) noexcept
     // clang-format on
     {
         return viRngUniform(method, stream, n, r, a, b);
@@ -190,7 +313,7 @@ namespace detail {
     auto uniform(std::underlying_type_t<Method> const method,
         random_generator::state_ptr_t const stream,
         difference_type const n, std::complex<float>* const r,
-        float const a, float const b)
+        float const a, float const b) noexcept
     // clang-format on
     {
         static_assert(sizeof(std::complex<float>) == 2 * sizeof(float));
@@ -202,7 +325,7 @@ namespace detail {
 struct uniform_fn {
     template <class T, class U>
     auto operator()(Method const method, random_generator& stream,
-        gsl::span<T> r, U const a, U const b) const
+        gsl::span<T> const r, U const a, U const b) const -> void
     {
         auto const err = detail::uniform(
             static_cast<std::underlying_type_t<Method>>(method),
@@ -214,7 +337,7 @@ struct uniform_fn {
                     "tcm::mkl::uniform_fn::operator(): "
                     "Period of the generator has been exceeded."};
             }
-            else {
+            else { // This part should in principle never be executed.
                 throw std::runtime_error{
                     "tcm::mkl::uniform_fn::operator(): Bug! "
                     "Unreachable code reached!"};
@@ -225,45 +348,171 @@ struct uniform_fn {
 
 TCM_SWARM_INLINE_VARIABLE(uniform_fn, uniform)
 
-template <class T>
-struct random_stream {
+} // namespace mkl
+#endif
+
+#if 0
+/// \brief Infinite stream generated by repreated applicatoin of a
+/// function.
+///
+/// Internally, we keep an array of `T`s of length `BlockSize` aligned to
+/// `Alignment`. Then, instead of generating values one by one, they are created
+/// in batches of `BlockSize` elements at once. This allows for SIMD-related
+/// optimisations.
+///
+/// \tparam T         type of the elements.
+/// \tparam BlockSize length of the internal buffer.
+/// \tparam Alignment alignment of the internal buffer (this is useful for
+///                   SIMD).
+template <class T, std::size_t BlockSize, std::size_t Alignment>
+struct buffered_generator
+    : public ranges::view_facade<buffered_generator<T, BlockSize, Alignment>> {
+
+    static_assert(std::is_same_v<T, std::decay_t<T>>,
+        "Please, use a normal type :)");
+
+    using buffered_generator_type =
+        buffered_generator<T, BlockSize, Alignment>;
+    using value_type           = T;
+    using reference            = T&;
+    using const_reference      = T const&;
+    using refill_function_type = auto(gsl::span<value_type>) -> void;
+
+    /// \brief Returns the length of internal buffer.
+    static constexpr auto block_size() noexcept { return BlockSize; }
+
+    /// \brief Returns the alignment of internal buffer in bytes.
+    static constexpr auto alignment() noexcept { return Alignment; }
+
   private:
+    friend ranges::range_access;
+
+    std::function<refill_function_type> _refill;
+    alignas(alignment()) std::array<value_type, block_size()> _block;
+
     auto refill()
     {
-        mkl::uniform(mkl::Method::uniform_standard, _generator, _buffer,
-            _min, _max);
+        Expects(
+            reinterpret_cast<std::uintptr_t>(_block.data()) % alignment()
+            == 0u);
+        _refill(gsl::make_span(_block));
     }
 
   public:
-    random_stream(mkl::random_generator& generator, T min, T max,
-        gsl::span<T> buffer) noexcept
-        : _generator{generator}, _buffer{buffer}, _min{min}, _max{max}, _i{0}
+    /// \brief Given a "refiller" function constructs a new buffered
+    /// generator.
+    ///
+    /// This constructor is eager in the sense that the internal buffer is
+    /// filled upon construction rather than upon the first request.
+    ///
+    /// \param fn A function of type `auto (gsl::span<value_type>) -> void`
+    /// which given a buffer, fills it with some values.
+    template <class RefillFunction,
+        class = std::enable_if_t<std::is_constructible_v<
+            std::function<refill_function_type>, RefillFunction&&>>>
+    buffered_generator(RefillFunction&& fn)
+        : _refill{std::forward<RefillFunction>(fn)}
     {
         refill();
     }
 
-    friend
-    auto operator>>(random_stream& stream, T& x) -> random_stream&
-    {
-        Expects(stream._i < stream._buffer.size());
-        x = stream._buffer[stream._i];
-        if (++stream._i == stream._buffer.size()) {
-            stream._i = 0;
-            stream.refill();
-        }
-    }
+    buffered_generator(buffered_generator const&) = default;
+    buffered_generator(buffered_generator&&) = default;
+    buffered_generator& operator=(buffered_generator const&) = default;
+    buffered_generator& operator=(buffered_generator&&) = default;
 
   private:
-    mkl::random_generator& _generator;
-    gsl::span<T>           _buffer;
-    T                      _min;
-    T                      _max;
-    mkl::difference_type   _i;
+    /// \brief A kind of stripped down iterator over the random_range.
+    ///
+    /// This class is quite lightweight -- it only keeps track of the current
+    /// position in the buffer. When the end of buffer is reached, it instructs
+    /// the range to refill the buffer which provides an illusion of an infinite
+    /// stream.
+    struct cursor {
+        buffered_generator_type* _stream;
+        std::size_t              _i;
+
+        decltype(auto) read() const noexcept(!detail::gsl_can_throw())
+        {
+            Expects(_stream != nullptr);
+            Expects(_i < buffered_generator_type::block_size());
+            return _stream->_block[_i];
+        }
+
+        auto equal(ranges::default_sentinel /*unused*/) const
+            noexcept(!detail::gsl_can_throw())
+        {
+            return false;
+        }
+
+        auto next() -> void
+        {
+            Expects(_stream != nullptr);
+            Expects(_i < buffered_generator_type::block_size());
+            if (++_i == buffered_generator_type::block_size()) {
+                _stream->refill();
+                _i = 0;
+            }
+            Ensures(_i < buffered_generator_type::block_size());
+        }
+    };
+
+    constexpr auto begin_cursor() noexcept -> cursor
+    {
+        return {this, 0u};
+    }
 };
 
+/// \brief Metafunction returning a standard uniform distribution corresponding
+/// to `T`.
+template <class T, class = void>
+struct uniform_distribution;
+
+template <class T>
+struct uniform_distribution<T,
+    std::enable_if_t<std::is_integral_v<T>>> {
+    using type = std::uniform_int_distribution<T>;
+};
+
+template <class T>
+struct uniform_distribution<T,
+    std::enable_if_t<std::is_floating_point_v<T>>> {
+    using type = std::uniform_real_distribution<T>;
+};
+
+template <class T>
+using uniform_distribution_t = typename uniform_distribution<T>::type;
+
+/// \brief Given a UniformRandomBitGenerator and lower and upper bounds, creates
+/// an infinite range of random numbers of type `T` distributed uniformly in
+/// `[min, max)`.
+template <class T, std::size_t BlockSize, std::size_t Alignment, class Generator>
+auto make_std_random_stream(Generator& g, T const min, T max)
+{
+    struct refill_fn {
+        Generator&                _gen;
+        uniform_distribution_t<T> _dist;
+
+        auto operator()(gsl::span<T> const x) noexcept(
+            noexcept(std::declval<uniform_distribution_t<T>&>()(
+                std::declval<Generator&>()))) -> void
+        {
+            std::generate(std::begin(x), std::end(x),
+                [this]() { return _dist(_gen); });
+        }
+    };
+    if constexpr (std::is_integral_v<T>) {
+        Expects(max > min);
+        --max;
+    }
+    return buffered_generator<T, BlockSize, Alignment>{
+        refill_fn{g, uniform_distribution_t<T>{min, max}}};
+}
+#endif
 
 
-} // namespace mkl
+
+
 TCM_SWARM_END_NAMESPACE
 
 #endif // TCM_SWARM_DETAIL_RANDOM_HPP
