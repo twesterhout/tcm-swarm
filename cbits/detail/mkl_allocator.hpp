@@ -72,6 +72,11 @@ class mkl_allocator {
     using difference_type = std::ptrdiff_t;
     using is_always_equal = std::true_type;
 
+    static constexpr auto alignment() noexcept -> size_type
+    {
+        return Alignment;
+    }
+
     // Construction and destruction.
 
     // clang-format off

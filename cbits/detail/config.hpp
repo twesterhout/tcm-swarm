@@ -33,6 +33,7 @@
 #define TCM_SWARM_DETAIL_CONFIG_HPP
 
 #include <cstddef>
+#include <gsl/gsl_assert>
 
 #define TCM_SWARM_NAMESPACE tcm
 
@@ -59,6 +60,8 @@
 #define TCM_SWARM_CONST __attribute__((__const__))
 
 #define TCM_SWARM_PURE __attribute__((__pure__))
+
+#define TCM_SWARM_ARTIFIFICAL __attribute__((__artificial__))
 
 #define TCM_SWARM_LIKELY(cond) __builtin_expect(!!(cond), 1)
 
@@ -89,6 +92,8 @@
 
 #define TCM_SWARM_PURE __attribute__((__pure__))
 
+#define TCM_SWARM_ARTIFIFICAL __attribute__((__artificial__))
+
 #define TCM_SWARM_LIKELY(cond) __builtin_expect(!!(cond), 1)
 
 #define TCM_SWARM_UNLIKELY(cond) __builtin_expect(!!(cond), 0)
@@ -116,6 +121,8 @@
 #define TCM_SWARM_CONST
 
 #define TCM_SWARM_PURE
+
+#define TCM_SWARM_ARTIFIFICAL
 
 #define TCM_SWARM_LIKELY(cond) (cond)
 
@@ -145,11 +152,33 @@ constexpr T _static_const{};
 
 TCM_SWARM_END_NAMESPACE
 
+#if defined(DOXYGEN_IN_HOUSE)
+    constexpr type name{};
+#else
 #define TCM_SWARM_INLINE_VARIABLE(type, name)                        \
     inline namespace {                                               \
         constexpr auto const& name =                                 \
             ::TCM_SWARM_NAMESPACE::_static_const<type>;              \
     }                                                                \
     /**/
+#endif
+
+TCM_SWARM_BEGIN_NAMESPACE
+
+namespace detail {
+    constexpr auto gsl_can_throw() noexcept -> bool
+    {
+#if defined(GSL_THROW_ON_CONTRACT_VIOLATION)
+        return true;
+#elif defined(GSL_TERMINATE_ON_CONTRACT_VIOLATION)                        \
+    || defined(GSL_TERMINATE_ON_CONTRACT_VIOLATION)
+        return false;
+#else
+#error "BUG! This function assumes that <gsl/gsl_assert> is included!"
+#endif
+    }
+} // namespace detail
+
+TCM_SWARM_END_NAMESPACE
 
 #endif // TCM_SWARM_DETAIL_CONFIG_HPP
