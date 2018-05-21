@@ -36,6 +36,7 @@
 #include <complex>
 
 #include "../detail/config.hpp"
+#include "../detail/debug.hpp"
 #include "../detail/mkl.hpp"
 
 

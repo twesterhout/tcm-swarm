@@ -29,8 +29,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// This file implements C++ wrappers around MKL's cblas_?scal functions.
+
 #ifndef TCM_SWARM_DETAIL_SCALE_HPP
 #define TCM_SWARM_DETAIL_SCALE_HPP
+
+#include <gsl/span>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -86,19 +90,24 @@ namespace detail {
     } // namespace
 } // namespace detail
 
+/// Let \f$V\f$ be a vector space over scalar field \f$\mathbb{F}\f$. Then
+/// #scale: \f$\mathbb{F} \to V \to \{\ast\}\f$ is defined by:
+/// \f$(\alpha, y) \mapsto y := \alpha y\f$.
 struct scale_fn {
-    // clang-format off
+    /// \brief Implementation for #gsl::span.
+    ///
+    /// \see [cblas_?scal](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-scal)
     template <class C, class T>
-    TCM_SWARM_FORCEINLINE
-    auto operator()(size_type n, C const alpha,
-        T* const x, difference_type const inc_x) const noexcept -> void
+    TCM_SWARM_FORCEINLINE auto operator()(
+        C const alpha, gsl::span<T> const x) const
+        noexcept(!::tcm::detail::gsl_can_throw()) -> void
     {
-        return detail::scale(static_cast<difference_type>(n), alpha, x, inc_x);
+        return detail::scale(gsl::narrow<difference_type>(x.size()), alpha,
+            x.data(), difference_type{1});
     }
-    // clang-format on
 };
 
-/// \brief Scales the vector with the given constant.
+/// \brief Global instance of #tcm::mkl::scale_fn.
 TCM_SWARM_INLINE_VARIABLE(scale_fn, scale)
 
 } // namespace mkl

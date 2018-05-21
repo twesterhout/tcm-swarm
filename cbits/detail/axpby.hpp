@@ -29,8 +29,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// This file implements a C++ wrapper around MKL's cblas_a?xpby functions.
+
 #ifndef TCM_SWARM_DETAIL_AXPBY_HPP
 #define TCM_SWARM_DETAIL_AXPBY_HPP
+
+#include <gsl/span>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -41,9 +45,9 @@ namespace mkl {
 namespace detail {
     namespace /*anonymous*/ {
 
-#define TCM_SWARM_AXPBY_SIGNATURE_FOR(C, T)                          \
-    auto axpby(difference_type n, C const alpha, T const* const x,   \
-        difference_type const inc_x, C const beta, T* const y,       \
+#define TCM_SWARM_AXPBY_SIGNATURE_FOR(C, T)                               \
+    auto axpby(difference_type n, C const alpha, T const* const x,        \
+        difference_type const inc_x, C const beta, T* const y,            \
         difference_type const inc_y) noexcept->void
 
         TCM_SWARM_FORCEINLINE
@@ -76,19 +80,27 @@ namespace detail {
     } // namespace
 } // namespace detail
 
+/// Let \f$V\f$ be a vector space over scalar field \f$\mathbb{F}\f$. Then
+/// #axpby: \f$\mathbb{F} \to V \to \mathbb{F} \to V \to \{\ast\}\f$ is
+/// defined by: \f$(\alpha, x, \beta, y) \mapsto y := \alpha x + \beta y\f$.
 struct axpby_fn {
+    /// \brief Implementation for #gsl::span.
+    ///
+    /// \see [cblas_?axpby](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-axpby).
     template <class C, class T>
-    TCM_SWARM_FORCEINLINE auto operator()(size_type n, C const alpha,
-        T const* const x, difference_type const inc_x, C const beta,
-        T* const y, difference_type const inc_y) const noexcept
-        -> void
+    TCM_SWARM_FORCEINLINE auto operator()(C const alpha,
+        gsl::span<T const> const x, C const beta,
+        gsl::span<T> const y) const
+        noexcept(!::tcm::detail::gsl_can_throw()) -> void
     {
-        return detail::axpby(static_cast<difference_type>(n), alpha,
-            x, inc_x, beta, y, inc_y);
+        Expects(x.size() == y.size());
+        constexpr difference_type one{1};
+        return detail::axpby(gsl::narrow<difference_type>(x.size()), alpha,
+            x.data(), one, beta, y.data(), one);
     }
 };
 
-/// \brief Performs the assignment `y := alpha * x + beta * y`
+/// \brief Global instance of #tcm::mkl::axpby_fn.
 TCM_SWARM_INLINE_VARIABLE(axpby_fn, axpby)
 
 } // namespace mkl

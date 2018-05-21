@@ -29,8 +29,12 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+// This file implements C++ wrappers around MKL's cblas_?dot? functions.
+
 #ifndef TCM_SWARM_DETAIL_UDOT_HPP
 #define TCM_SWARM_DETAIL_UDOT_HPP
+
+#include <gsl/gsl>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -65,9 +69,7 @@ namespace detail {
         TCM_SWARM_DOTU_SIGNATURE_FOR(std::complex<float>)
         {
             std::complex<float> result;
-            cblas_cdotu_sub(n, static_cast<void const*>(x), inc_x,
-                static_cast<void const*>(y), inc_y,
-                static_cast<void*>(&result));
+            cblas_cdotu_sub(n, x, inc_x, y, inc_y, &result);
             return result;
         }
 
@@ -76,9 +78,7 @@ namespace detail {
         TCM_SWARM_DOTU_SIGNATURE_FOR(std::complex<double>)
         {
             std::complex<double> result;
-            cblas_zdotu_sub(n, static_cast<void const*>(x), inc_x,
-                static_cast<void const*>(y), inc_y,
-                static_cast<void*>(&result));
+            cblas_zdotu_sub(n, x, inc_x, y, inc_y, &result);
             return result;
         }
 
@@ -87,22 +87,30 @@ namespace detail {
     } // namespace
 } // namespace detail
 
+/// Let \f$V\f$ be a vector space over scalar field \f$\mathbb{F}\f$. Then
+/// unconjugated dot product #dotu: \f$V \to V \to \mathbb{F}\f$ is
+/// defined by: \f$(x, y) \mapsto \sum_i x_i y_i\f$.
 struct dotu_fn {
+    /// \brief Implementation for #gsl::span.
+    ///
+    /// \see [cblas_?dotu](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-dotu)
+    ///      [cblas_?dot](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-dot)
     // clang-format off
     template <class T>
     TCM_SWARM_FORCEINLINE
     TCM_SWARM_PURE
-    auto operator()(size_type const n,
-        T const* const x, difference_type const inc_x,
-        T const* const y, difference_type const inc_y) const noexcept -> T
-    {
-        return detail::dotu(
-            static_cast<difference_type>(n), x, inc_x, y, inc_y);
-    }
+    auto operator()(gsl::span<T const> const x, gsl::span<T const> const y)
+        const noexcept(!tcm::detail::gsl_can_throw()) -> T
     // clang-format on
+    {
+        Expects(x.size() == y.size());
+        constexpr difference_type one{1};
+        return detail::dotu(gsl::narrow<difference_type>(x.size()),
+            x.data(), one, y.data(), one);
+    }
 };
 
-/// \brief Computes unconjugated product of two vectors.
+/// \brief Global instance of #tcm::mkl::dotu_fn.
 TCM_SWARM_INLINE_VARIABLE(dotu_fn, dotu)
 
 } // namespace mkl
