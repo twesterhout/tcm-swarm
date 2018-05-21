@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <complex>
 #include <numeric>
+#include <vector>
 
 #include <gsl/span>
 
@@ -42,6 +43,7 @@
 
 TCM_SWARM_BEGIN_NAMESPACE
 
+namespace detail {
 struct is_valid_spin_fn {
     template <class T, class = std::enable_if_t<std::is_signed_v<T>>>
     constexpr auto operator()(T const x) const noexcept -> bool
@@ -66,9 +68,10 @@ struct is_valid_spin_fn {
             [this](auto const s) -> bool { return this->operator()(s); });
     }
 };
+} // namespace detail
 
-TCM_SWARM_INLINE_VARIABLE(is_valid_spin_fn, is_valid_spin)
-
+/// \brief Checks whether a number or a span of numbers represents valid spins.
+TCM_SWARM_INLINE_VARIABLE(detail::is_valid_spin_fn, is_valid_spin)
 
 namespace detail {
 template <class R>
@@ -84,7 +87,6 @@ auto magnetisation(gsl::span<std::complex<R> const> const x) noexcept(
 }
 } // namespace detail
 
-
 #if !defined(TCM_SWARM_NOCHECK_VALID_SPIN)
 #define TCM_SWARM_IS_VALID_SPIN(x) ::TCM_SWARM_NAMESPACE::is_valid_spin(x)
 #else
@@ -97,6 +99,20 @@ auto magnetisation(gsl::span<std::complex<R> const> const x) noexcept(
 #else
 #define TCM_SWARM_CHECK_MAGNETISATION(x, m) true
 #endif
+
+template <class C>
+auto to_bitset(gsl::span<C> const spin) -> std::vector<bool>
+{
+    using index_type = typename gsl::span<C>::index_type;
+    static_assert(std::is_signed_v<index_type>);
+    std::vector<bool> x(spin.size());
+    for (auto i = 1; i <= spin.size(); ++i) {
+        auto const s = spin[spin.size() - i];
+        Expects(s == C{1} || s == C{-1});
+        x[i - 1] = s == C{1};
+    }
+    return x;
+}
 
 TCM_SWARM_END_NAMESPACE
 
