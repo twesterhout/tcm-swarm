@@ -361,4 +361,34 @@ auto parse_energy_input(std::basic_istream<CharT, Traits>& is)
     return expected;
 }
 
+template <class Rbm, class CharT, class Traits>
+auto parse_der_log_wf_input(
+    std::basic_istream<CharT, Traits>& is, Rbm const& rbm)
+{
+    using vector_type   = typename Rbm::vector_type;
+    using index_type    = typename Rbm::index_type;
+    using C             = typename Rbm::value_type;
+    using R             = decltype(std::declval<C>().real());
+    auto const io_state = is.exceptions();
+    std::vector<std::pair<vector_type, vector_type>> expected;
+    try {
+        is.exceptions(std::ios_base::failbit);
+        while (!is.eof()) {
+            std::vector<R> spin_real(rbm.size_visible());
+            PyList<R>      s{gsl::span<R>{spin_real}};
+            vector_type    gradient(rbm.size());
+            auto           py_grad = to_list(gsl::make_span(gradient));
+            is >> s >> py_grad;
+            vector_type spin(std::begin(spin_real), std::end(spin_real));
+            expected.emplace_back(std::move(spin), std::move(gradient));
+            std::ws(is);
+        }
+    }
+    catch (std::ios_base::failure const& e) {
+        is.exceptions(io_state);
+        throw parse_error{"Failed to parse spin - log_wf combinations."};
+    }
+    return expected;
+}
+
 #endif // TCM_SWARM_PARSE_TEST_HPP
