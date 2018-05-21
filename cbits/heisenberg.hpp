@@ -60,7 +60,7 @@ struct Heisenberg<1u> {
     }
 
     template <class State>
-    auto operator()(State const& state)
+    auto operator()(State const& state) const
     {
         using C           = typename State::value_type;
         using R           = typename C::value_type;
