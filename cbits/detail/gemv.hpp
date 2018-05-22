@@ -35,6 +35,7 @@
 #define TCM_SWARM_DETAIL_GEMV_HPP
 
 #include <gsl/span>
+#include <gsl/multi_span>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -122,10 +123,10 @@ struct gemv_fn {
     /// and thus `n = y.size()` and `m = x.size()`.
     ///
     /// \see [cblas_?gemv](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-gemv)
-    template <class T>
+    template <class T, std::ptrdiff_t DimA, std::ptrdiff_t DimX, std::ptrdiff_t DimY>
     TCM_SWARM_FORCEINLINE auto operator()(Layout const layout,
-        Transpose const trans, T const alpha, gsl::span<T const> const a,
-        gsl::span<T const> const x, T beta, gsl::span<T> const y) const
+        Transpose const trans, T const alpha, gsl::span<T const, DimA> const a,
+        gsl::span<T const, DimX> const x, T beta, gsl::span<T, DimY> const y) const
         noexcept(!::tcm::detail::gsl_can_throw()) -> void
     {
         Expects(a.size() / x.size() == y.size());
@@ -140,6 +141,43 @@ struct gemv_fn {
         // clang-format on
         auto const ldim = (layout == Layout::ColMajor) ? m : n;
         constexpr difference_type one{1};
+        detail::gemv(to_raw_enum(layout), to_raw_enum(trans), m, n, alpha,
+            a.data(), ldim, x.data(), one, beta, y.data(), one);
+    }
+
+    // clang-format off
+    template <class T, std::ptrdiff_t DimA1, std::ptrdiff_t DimA2,
+        std::ptrdiff_t DimX, std::ptrdiff_t DimY>
+    TCM_SWARM_FORCEINLINE
+    auto operator()(Layout const layout, Transpose const trans,
+        T const alpha, gsl::multi_span<T const, DimA1, DimA2> const a,
+        gsl::span<T const, DimX> const x,
+        T beta, gsl::span<T, DimY> const y) const
+        noexcept(!::tcm::detail::gsl_can_throw()) -> void
+    // clang-format on
+    {
+        // clang-format off
+        auto const [m, n] = (layout == Layout::RowMajor)
+            ? std::make_tuple(
+                  gsl::narrow<difference_type>(a.template extent<0>()),
+                  gsl::narrow<difference_type>(a.template extent<1>()))
+            : std::make_tuple(
+                  gsl::narrow<difference_type>(a.template extent<1>()),
+                  gsl::narrow<difference_type>(a.template extent<0>()));
+        // clang-format on
+        auto const ldim =
+            gsl::narrow_cast<difference_type>(a.template extent<1>());
+        constexpr difference_type one{1};
+
+        if (trans == Transpose::None) {
+            Expects(gsl::narrow<difference_type>(y.size()) == m);
+            Expects(gsl::narrow<difference_type>(x.size()) == n);
+        }
+        else {
+            Expects(gsl::narrow<difference_type>(x.size()) == m);
+            Expects(gsl::narrow<difference_type>(y.size()) == n);
+        }
+
         detail::gemv(to_raw_enum(layout), to_raw_enum(trans), m, n, alpha,
             a.data(), ldim, x.data(), one, beta, y.data(), one);
     }
