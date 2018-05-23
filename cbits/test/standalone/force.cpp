@@ -36,6 +36,7 @@
 #include <complex>
 #endif
 #include "../../force.hpp"
+#include "../../covariance.hpp"
 
 int main()
 {
@@ -54,15 +55,34 @@ int main()
         {0.32714006f, 0.45568905f}
     };
 
+    std::complex<float> mean_derivative_data[3];
+    std::fill(std::begin(mean_derivative_data),
+        std::end(mean_derivative_data), std::complex{0.0f, 0.0f});
+
     auto const derivatives = gsl::as_multi_span<std::complex<float> const>(
         std::data(derivatives_data), gsl::dim<4>(), gsl::dim<3>());
     auto const energies = gsl::make_span<std::complex<float> const>(energies_data);
+    auto const mean_derivative = gsl::make_span(mean_derivative_data);
+
+    tcm::mkl::axpy(0.25f, gsl::make_span(&(derivatives[{0, 0}]), 3), mean_derivative);
+    tcm::mkl::axpy(0.25f, gsl::make_span(&(derivatives[{1, 0}]), 3), mean_derivative);
+    tcm::mkl::axpy(0.25f, gsl::make_span(&(derivatives[{2, 0}]), 3), mean_derivative);
+    tcm::mkl::axpy(0.25f, gsl::make_span(&(derivatives[{3, 0}]), 3), mean_derivative);
+    std::transform(std::begin(mean_derivative), std::end(mean_derivative),
+        std::begin(mean_derivative), [](auto const x){ return std::conj(x); });
+
+    std::copy(std::begin(mean_derivative), std::end(mean_derivative),
+        std::ostream_iterator<std::complex<float>>{std::cout, ", "});
+    std::cout << '\n';
 
     std::complex<float> force_data[3];
     std::complex<float> workspace_data[4];
+    std::complex<float> covariance_data[9];
 
     auto const force = gsl::make_span(force_data);
     auto const workspace = gsl::make_span(workspace_data);
+    auto const covariance =
+        gsl::as_multi_span<std::complex<float>>(covariance_data, gsl::dim<3>(), gsl::dim<3>());
 
     tcm::force(energies, derivatives, force, workspace);
 
@@ -70,6 +90,13 @@ int main()
         std::ostream_iterator<std::complex<float>>{std::cout, ", "});
     std::cout << '\n';
 
+    tcm::covariance_matrix(derivatives,
+        gsl::span<std::complex<float> const, 3>{mean_derivative},
+        covariance);
+
+    std::copy(std::begin(covariance), std::end(covariance),
+        std::ostream_iterator<std::complex<float>>{std::cout, ", "});
+    std::cout << '\n';
     // Expected output:
     // (0.0601499,-0.0134551), (-0.0336545,-0.011075), (-0.0697014,0.0260818),
 #endif
