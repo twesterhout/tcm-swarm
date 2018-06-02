@@ -35,6 +35,7 @@
 #define TCM_SWARM_DETAIL_AXPY_HPP
 
 #include <gsl/span>
+#include <gsl/multi_span>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -43,8 +44,6 @@ TCM_SWARM_BEGIN_NAMESPACE
 namespace mkl {
 
 namespace detail {
-    namespace /*anonymous*/ {
-
 #define TCM_SWARM_AXPY_SIGNATURE_FOR(C, T)                                \
     auto axpy(difference_type n, C const alpha, T const* const x,         \
         difference_type const inc_x, T* const y,                          \
@@ -77,7 +76,6 @@ namespace detail {
         }
 
 #undef TCM_SWARM_AXPY_SIGNATURE_FOR
-    } // namespace
 } // namespace detail
 
 /// Let \f$V\f$ be a vector space over scalar field \f$\mathbb{F}\f$. Then
@@ -87,11 +85,23 @@ struct axpy_fn {
     /// \brief Implementation for #gsl::span.
     ///
     /// \see [cblas_?axpy](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-axpy).
-    template <class C, class T, std::ptrdiff_t DimX, std::ptrdiff_t DimY>
+    template <class C, class T, template <class, std::ptrdiff_t> class SpanX,
+        template <class, std::ptrdiff_t> class SpanY, std::ptrdiff_t DimX,
+        std::ptrdiff_t DimY>
     TCM_SWARM_FORCEINLINE auto operator()(C const alpha,
-        gsl::span<T const, DimX> const x, gsl::span<T, DimY> const y) const
+        SpanX<T const, DimX> const x, SpanY<T, DimY> const y) const
         noexcept(!::tcm::detail::gsl_can_throw()) -> void
     {
+        // clang-format off
+        static_assert(
+            std::is_same_v<SpanX<T const, DimX>, gsl::span<T const, DimX>>
+         || std::is_same_v<SpanX<T const, DimX>, gsl::multi_span<T const, DimX>>,
+            "tcm::mkl::axpy currently only supports gsl::span and gsl::multi_span.");
+        static_assert(
+            std::is_same_v<SpanY<T, DimY>, gsl::span<T, DimY>>
+         || std::is_same_v<SpanY<T, DimY>, gsl::multi_span<T, DimY>>,
+            "tcm::mkl::axpy currently only supports gsl::span and gsl::multi_span.");
+        // clang-format on
         Expects(x.size() == y.size());
         constexpr difference_type one{1};
         return detail::axpy(gsl::narrow<difference_type>(x.size()), alpha,
@@ -106,4 +116,3 @@ TCM_SWARM_INLINE_VARIABLE(axpy_fn, axpy)
 TCM_SWARM_END_NAMESPACE
 
 #endif // TCM_SWARM_DETAIL_AXPY_HPP
-
