@@ -37,6 +37,7 @@
 #include <stdexcept>
 
 #include "../detail/config.hpp"
+#include "../detail/errors.hpp"
 #include "../detail/mkl.hpp"
 
 TCM_SWARM_BEGIN_NAMESPACE
@@ -123,13 +124,11 @@ class mkl_allocator {
             return nullptr;
         }
         if (n > max_size()) {
-            throw std::length_error{"mkl_allocator<T>::allocate()"
-                                    ": Integer overflow."};
+            throw_with_trace(std::length_error{
+                "mkl_allocator<T>::allocate(): Integer overflow."});
         }
         auto* p = mkl_malloc(n * sizeof(value_type), Alignment);
-        if (p == nullptr) {
-            throw std::bad_alloc{};
-        }
+        if (p == nullptr) { throw_with_trace(std::bad_alloc{}); }
         return static_cast<pointer>(p);
     }
 
