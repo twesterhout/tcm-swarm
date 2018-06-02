@@ -44,67 +44,78 @@
 
 TCM_SWARM_BEGIN_NAMESPACE
 
-template <std::size_t Dimension>
+template <class R, std::size_t Dimension, bool Periodic>
 struct Heisenberg;
 
 /// \brief Heisenberg Hamiltonian for spin-1/2 particles in one dimension.
-template <>
-struct Heisenberg<1u> {
-  private:
-    bool _periodic; ///< Whether to use periodic boundary conditions.
-
-  public:
-    explicit Heisenberg(bool periodic = false) noexcept
-        : _periodic{periodic}
-    {
-    }
+template <class R, bool Periodic>
+struct Heisenberg<R, 1u, Periodic> {
+    constexpr Heisenberg() noexcept = default;
+    constexpr Heisenberg(R const cutoff) noexcept : _cutoff{cutoff} {}
+    constexpr Heisenberg(Heisenberg const&) = default;
+    constexpr Heisenberg(Heisenberg&&) noexcept      = default;
+    constexpr Heisenberg& operator=(Heisenberg const&) = default;
+    constexpr Heisenberg& operator=(Heisenberg&&) noexcept = default;
 
     template <class State>
-    auto operator()(State const& state) const
+    auto operator()(State const& state) const -> typename State::value_type;
+
+  private:
+    // clang-format off
+    template <class State, std::ptrdiff_t DimSpin>
+    auto kernel(gsl::span<typename State::index_type const, 2> const flips,
+        State const& state,
+        gsl::span<typename State::value_type const, DimSpin> const spin) const
+            -> typename State::value_type
+    // clang-format on
     {
+        using std::begin, std::end;
         using C           = typename State::value_type;
-        using R           = typename C::value_type;
-        using index_type  = typename State::index_type;
         using vector_type = typename State::vector_type;
-        auto const spin   = state.spin();
-        if (spin.size() <= 1) { return C{}; }
-        using size_type = typename decltype(spin)::size_type;
-        constexpr auto            cutoff = R{5};
-        C                         energy{0};
-        std::array<index_type, 2> flips;
-        for (index_type i = 0, count = spin.size() - 1; i < count; ++i) {
-            if (spin[i] == spin[i + 1]) { energy += C{1}; }
-            else {
-                flips = {i, i + 1};
-                auto [log_quot_wf, cache] =
-                    state.log_quot_wf(gsl::make_span(flips));
-                if (log_quot_wf.real() >= cutoff) {
-                    vector_type s{std::begin(spin), std::end(spin)};
-                    s[i] *= C{-1};
-                    s[i + 1] *= C{-1};
+
+        if (spin[flips[0]] == spin[flips[1]]) { return C{1}; }
+        else {
+            auto const [log_quot_wf, cache] = state.log_quot_wf(flips);
+            if (_cutoff.has_value()) {
+                if (log_quot_wf.real() > *_cutoff) {
+                    vector_type s{begin(spin), end(spin)};
+                    s[flips[0]] *= C{-1};
+                    s[flips[1]] *= C{-1};
                     throw use_different_spin{std::move(s)};
                 }
-                energy += C{-1} + C{2} * std::exp(log_quot_wf);
             }
+            return C{-1} + C{2} * std::exp(log_quot_wf);
         }
-        if (_periodic) {
-            if (spin[0] == spin[spin.size() - 1]) { energy += C{1}; }
-            else {
-                flips = {0, spin.size() - 1};
-                auto [log_quot_wf, crap] =
-                    state.log_quot_wf(gsl::span<index_type const>{flips});
-                if (log_quot_wf.real() >= cutoff) {
-                    vector_type s{std::begin(spin), std::end(spin)};
-                    s[0] *= C{-1};
-                    s[spin.size() - 1] *= C{-1};
-                    throw use_different_spin{std::move(s)};
-                }
-                energy += C{-1} + C{2} * std::exp(log_quot_wf);
-            }
-        }
-        return energy;
     }
+
+    std::optional<R> _cutoff;
 };
+
+template <class R, bool Periodic>
+template <class State>
+auto Heisenberg<R, 1u, Periodic>::operator()(State const& state) const ->
+    typename State::value_type
+{
+    using C           = std::complex<R>;
+    using index_type  = typename State::index_type;
+    using vector_type = typename State::vector_type;
+    static_assert(std::is_same_v<C, typename State::value_type>);
+
+    auto const spin = state.spin();
+    if (spin.size() <= 1) { return C{}; }
+    using size_type = typename decltype(spin)::size_type;
+    C                         energy{0};
+    std::array<index_type, 2> flips;
+    for (index_type i = 0, count = spin.size() - 1; i < count; ++i) {
+        flips = {i, i + 1};
+        energy += kernel(flips, state, spin);
+    }
+    if constexpr (Periodic) {
+        flips = {0, spin.size() - 1};
+        energy += kernel(flips, state, spin);
+    }
+    return energy;
+}
 
 TCM_SWARM_END_NAMESPACE
 
