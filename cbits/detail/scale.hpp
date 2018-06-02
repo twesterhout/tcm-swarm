@@ -35,6 +35,7 @@
 #define TCM_SWARM_DETAIL_SCALE_HPP
 
 #include <gsl/span>
+#include <gsl/multi_span>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -43,7 +44,6 @@ TCM_SWARM_BEGIN_NAMESPACE
 namespace mkl {
 
 namespace detail {
-    namespace {
 #define TCM_SWARM_SCALE_SIGNATURE_FOR(C, T)                          \
     auto scale(difference_type n, C const alpha, T* const x,         \
         difference_type const inc_x) noexcept->void
@@ -87,7 +87,6 @@ namespace detail {
         }
 
 #undef TCM_SWARM_SCALE_SIGNATURE_FOR
-    } // namespace
 } // namespace detail
 
 /// Let \f$V\f$ be a vector space over scalar field \f$\mathbb{F}\f$. Then
@@ -97,12 +96,21 @@ struct scale_fn {
     /// \brief Implementation for #gsl::span.
     ///
     /// \see [cblas_?scal](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-scal)
-    template <class C, class T>
+    template <class C, class T, std::ptrdiff_t Dim>
     TCM_SWARM_FORCEINLINE auto operator()(
-        C const alpha, gsl::span<T> const x) const
+        C const alpha, gsl::span<T, Dim> const x) const
         noexcept(!::tcm::detail::gsl_can_throw()) -> void
     {
-        return detail::scale(gsl::narrow<difference_type>(x.size()), alpha,
+        return detail::scale(gsl::narrow_cast<difference_type>(x.size()), alpha,
+            x.data(), difference_type{1});
+    }
+
+    template <class C, class T, std::ptrdiff_t Dim>
+    TCM_SWARM_FORCEINLINE auto operator()(
+        C const alpha, gsl::multi_span<T, Dim> const x) const
+        noexcept(!::tcm::detail::gsl_can_throw()) -> void
+    {
+        return detail::scale(gsl::narrow_cast<difference_type>(x.size()), alpha,
             x.data(), difference_type{1});
     }
 };
