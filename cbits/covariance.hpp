@@ -35,36 +35,62 @@
 #include "detail/config.hpp"
 #include "detail/herk.hpp"
 #include "detail/her.hpp"
+#include "detail/axpy.hpp"
+#include "detail/scale.hpp"
 
 #include <gsl/span>
 #include <gsl/multi_span>
 
 TCM_SWARM_BEGIN_NAMESPACE
 
+namespace detail {
+
+// TODO: This is a terribly inefficient implementation!
+template <class C, std::ptrdiff_t Steps, std::ptrdiff_t Parameters>
+auto average_derivative(
+    gsl::multi_span<C const, Steps, Parameters> const derivatives,
+    gsl::span<C, Parameters> const                    out)
+{
+    using std::begin, std::end;
+    using R                      = typename C::value_type;
+    auto const number_parameters = derivatives.template extent<1>();
+    auto const number_steps      = derivatives.template extent<0>();
+    Expects(out.size() == number_parameters);
+    Expects(number_steps > 0);
+
+    auto const first = derivatives[0];
+    std::copy(begin(first), end(first), begin(out));
+    for (auto i = 1; i < number_steps; ++i) {
+        mkl::axpy(C{1}, derivatives[i], out);
+    }
+    mkl::scale(C{1} / gsl::narrow<R>(number_steps), out);
+}
+
+} // namespace detail
+
 template <class C, std::ptrdiff_t Steps, std::ptrdiff_t Parameters>
 auto covariance_matrix(
     gsl::multi_span<C const, Steps, Parameters> const derivatives,
-    gsl::span<C const, Parameters> const              conj_mean_derivative,
-    gsl::multi_span<C, Parameters, Parameters> const  out)
+    gsl::multi_span<C, Parameters, Parameters> const  out,
+    gsl::span<C, Parameters> const                    workspace)
 {
     using R = typename C::value_type;
+    using std::begin, std::end;
     auto const number_parameters = derivatives.template extent<1>();
     auto const number_steps      = derivatives.template extent<0>();
     Expects(number_parameters > 0 && number_steps > 0);
-    Expects(conj_mean_derivative.size() == number_parameters);
+    Expects(workspace.size() == number_parameters);
     Expects(out.template extent<0>() == number_parameters
             && out.template extent<1>() == number_parameters);
 
     mkl::herk(mkl::Layout::RowMajor, mkl::UpLo::Upper,
-        mkl::Transpose::ConjTrans,
-        R{1} / gsl::narrow<R>(number_steps), derivatives, R{0}, out);
-#if 0
-    std::copy(std::begin(out), std::end(out),
-        std::ostream_iterator<C>{std::cout, ", "});
-    std::cout << '\n';
-#endif
+        mkl::Transpose::ConjTrans, R{1} / gsl::narrow<R>(number_steps),
+        derivatives, R{0}, out);
+    detail::average_derivative(derivatives, workspace);
+    std::transform(begin(workspace), end(workspace), begin(workspace),
+        [](auto const z) noexcept { return std::conj(z); });
     mkl::her(mkl::Layout::RowMajor, mkl::UpLo::Upper, R{-1},
-        conj_mean_derivative, out);
+        gsl::span<C const, Parameters>{workspace}, out);
 }
 
 TCM_SWARM_END_NAMESPACE
