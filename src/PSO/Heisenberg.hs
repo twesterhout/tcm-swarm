@@ -101,6 +101,9 @@ heisenberg1DOpen n
   | n > 2 = trustSym $ heisenberg1DOpenImpl n pauliX
           + heisenberg1DOpenImpl n pauliY
           + heisenberg1DOpenImpl n pauliZ
+  | n == 2 = trustSym $ pauliX `kronecker` pauliX
+                      + pauliY `kronecker` pauliY
+                      + pauliZ `kronecker` pauliZ
   | otherwise = undefined
 
 heisenberg1DOpenImpl :: Int -> Matrix C -> Matrix C

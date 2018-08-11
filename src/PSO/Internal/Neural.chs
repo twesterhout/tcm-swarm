@@ -1,4 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -8,90 +10,207 @@
 module PSO.Internal.Neural
   ( Measurement(..)
   , RbmC(..)
-  , RbmZ(..)
-  , _newRbmC
-  , _newRbmZ
-  , _cloneRbmC
-  , _cloneRbmZ
-  , _sizeVisibleC
-  , _sizeVisibleZ
-  , _sizeHiddenC
-  , _sizeHiddenZ
-  , _setWeightsC
-  , _setWeightsZ
-  , _setVisibleC
-  , _setVisibleZ
-  , _setHiddenC
-  , _setHiddenZ
-  , _printRbmC
-  , _printRbmZ
-  , _caxpbyRbmC
-  , _zaxpbyRbmZ
-  , _cscaleRbmC
-  , _zscaleRbmZ
-  , McmcC
-  , McmcZ
-  , _newMcmcC
-  , _newMcmcZ
-  , _logWFC
-  , _logWFZ
-  , _logQuotientWF1C
-  , _logQuotientWF1Z
-  , _logQuotientWF2C
-  , _logQuotientWF2Z
-  , _propose1C
-  , _propose1Z
-  , _propose2C
-  , _propose2Z
-  , _accept1C
-  , _accept1Z
-  , _accept2C
-  , _accept2Z
-  , _printMcmcC
-  , _printMcmcZ
-  , _locEHH1DOpenC
-  , _locEHH1DOpenZ
-  , _upDeltaWellC
-  , _upDeltaWellZ
-  , _mcmcBlockC
+  , _RbmC'construct
+  , _RbmC'clone
+  , _RbmC'getWeights
+  , _RbmC'getVisible
+  , _RbmC'getHidden
+  , _RbmC'heisenberg1D
+  -- , _RbmC'plus
+  -- , _RbmC'minus
+  -- , _RbmC'multiply
+  -- , _RbmC'divide
+  -- , _RbmC'negate
   ) where
 
-
-import Foreign.C
-import Foreign.Storable
-import Foreign.Ptr
-import Foreign.ForeignPtr
-import Foreign.Marshal
+import Control.DeepSeq
+import Control.Exception (assert)
+import Control.Monad (when, (>=>))
+import Control.Monad.Primitive
 import Data.Complex
 import Data.Coerce
-import GHC.Generics (Generic)
-import Control.DeepSeq
 import qualified Data.Vector.Storable as V
+import Foreign
+import Foreign.C.Error
+import Foreign.C.Types
+import GHC.Generics (Generic)
 import System.IO.Unsafe (unsafePerformIO)
 
 #include "neural.h"
 
--- type MKLSize = {#type tcm_size_type #}
--- type MKLInt  = {#type tcm_difference_type #}
-
-{#pointer *tcm_cRBM  as RbmC  foreign finalizer tcm_cRBM_Destroy  newtype#}
--- dummy :: Int -- removing this line confuses Vim's syntax highlighting.
-
-{#pointer *tcm_zRBM  as RbmZ  foreign finalizer tcm_zRBM_Destroy  newtype#}
--- dummy :: Int -- removing this line confuses Vim's syntax highlighting.
-
-{#pointer *tcm_cMCMC as McmcC foreign finalizer tcm_cMCMC_Destroy newtype#}
--- dummy :: Int -- removing this line confuses Vim's syntax highlighting.
-
-{#pointer *tcm_zMCMC as McmcZ foreign finalizer tcm_zMCMC_Destroy newtype#}
--- dummy :: Int -- removing this line confuses Vim's syntax highlighting.
+type MKLSize = {#type tcm_size_type #}
+type MKLInt  = {#type tcm_difference_type #}
 
 {#pointer *tcm_Complex8 as ComplexCFloatPtr -> Complex CFloat #}
 
 {#pointer *tcm_Complex16 as ComplexCDoublePtr -> Complex CDouble #}
 
 
-data Measurement a = Measurement !a !a
+data RbmC = RbmC
+  { _rbmC'weightsR    :: {-# UNPACK #-}!(Ptr CFloat)
+  , _rbmC'weightsI    :: {-# UNPACK #-}!(Ptr CFloat)
+  , _rbmC'visibleR    :: {-# UNPACK #-}!(Ptr CFloat)
+  , _rbmC'visibleI    :: {-# UNPACK #-}!(Ptr CFloat)
+  , _rbmC'hiddenR     :: {-# UNPACK #-}!(Ptr CFloat)
+  , _rbmC'hiddenI     :: {-# UNPACK #-}!(Ptr CFloat)
+  , _rbmC'sizeVisible :: {-# UNPACK #-}!Int
+  , _rbmC'sizeHidden  :: {-# UNPACK #-}!Int
+  } deriving (Generic)
+
+_rbmC'sizeWeights :: RbmC -> Int
+_rbmC'sizeWeights rbm = _rbmC'sizeVisible rbm * _rbmC'sizeHidden rbm
+
+{#pointer *tcm_cRBM as RbmCPtr -> RbmC #}
+
+instance Storable RbmC where
+  sizeOf _ = {#sizeof tcm_cRBM#}
+  alignment _ = {#alignof tcm_cRBM#}
+  peek p = RbmC <$> {#get struct tcm_cRBM->_real_weights #} p
+                <*> {#get struct tcm_cRBM->_imag_weights #} p
+                <*> {#get struct tcm_cRBM->_real_visible #} p
+                <*> {#get struct tcm_cRBM->_imag_visible #} p
+                <*> {#get struct tcm_cRBM->_real_hidden  #} p
+                <*> {#get struct tcm_cRBM->_imag_hidden  #} p
+                <*> (fromIntegral <$> {#get struct tcm_cRBM->_size_visible #} p)
+                <*> (fromIntegral <$> {#get struct tcm_cRBM->_size_hidden  #} p)
+  poke p x = do
+    {#set struct tcm_cRBM->_real_weights #} p (_rbmC'weightsR x)
+    {#set struct tcm_cRBM->_imag_weights #} p (_rbmC'weightsI x)
+    {#set struct tcm_cRBM->_real_visible #} p (_rbmC'visibleR x)
+    {#set struct tcm_cRBM->_imag_visible #} p (_rbmC'visibleI x)
+    {#set struct tcm_cRBM->_real_hidden  #} p (_rbmC'hiddenR  x)
+    {#set struct tcm_cRBM->_imag_hidden  #} p (_rbmC'hiddenI  x)
+    {#set struct tcm_cRBM->_size_visible #} p (fromIntegral . _rbmC'sizeVisible $ x)
+    {#set struct tcm_cRBM->_size_hidden  #} p (fromIntegral . _rbmC'sizeHidden $ x)
+
+
+checkCError :: CInt -> IO ()
+checkCError err = when (err /= (0 :: CInt)) $ throwErrno "PSO.Internal.Neural"
+
+unsafeWith :: Storable a => V.Vector a -> (Ptr a -> Int -> IO b) -> IO b
+unsafeWith v f = let n = V.length v in V.unsafeWith v (\p -> f p n)
+
+-- _RbmC'getWeights ::
+--      PrimMonad m
+--   => ForeignPtr RbmC -> m (V.MVector (PrimState m) Float, V.MVector (PrimState m) Float)
+_RbmC'getWeights = _RbmC'getImpl _rbmC'sizeWeights _rbmC'weightsR _rbmC'weightsI
+
+_RbmC'getVisible = _RbmC'getImpl _rbmC'sizeVisible _rbmC'visibleR _rbmC'visibleI
+
+_RbmC'getHidden = _RbmC'getImpl _rbmC'sizeHidden _rbmC'hiddenR _rbmC'hiddenI
+
+_RbmC'getImpl ::
+     PrimMonad m
+  => (RbmC -> Int)
+  -> (RbmC -> Ptr CFloat)
+  -> (RbmC -> Ptr CFloat)
+  -> ForeignPtr RbmC -> m (V.MVector (PrimState m) Float, V.MVector (PrimState m) Float)
+_RbmC'getImpl size real imag = unsafeIOToPrim .
+  flip withForeignPtr (peek >=> \rbm -> coerce <$> pair (size rbm) rbm)
+  where
+    pair !n rbm = (,) <$> (V.MVector n <$> (newForeignPtr_ . real $ rbm))
+                      <*> (V.MVector n <$> (newForeignPtr_ . imag $ rbm))
+
+_RbmC'preAlloc :: (Ptr RbmC -> IO ()) -> IO (ForeignPtr RbmC)
+_RbmC'preAlloc f = do
+  rbm <- mallocForeignPtr :: IO (ForeignPtr RbmC)
+  withForeignPtr rbm f
+  addForeignPtrFinalizer _RbmC'destruct rbm
+  return rbm
+
+{#fun unsafe tcm_cRBM_Construct as _RbmC'constructImpl
+  { `Int', `Int', `RbmCPtr' } -> `()' #}
+
+foreign import ccall unsafe "neural.h &tcm_cRBM_Destruct"
+  _RbmC'destruct :: FunPtr (Ptr RbmC -> IO ())
+
+_RbmC'construct :: Int -> Int -> IO (ForeignPtr RbmC)
+_RbmC'construct n m = assert (n > 0 && m > 0) $
+  _RbmC'preAlloc $ _RbmC'constructImpl n m
+
+{#fun unsafe tcm_cRBM_Clone as _RbmC'cloneImpl
+  { withForeignPtr* `ForeignPtr RbmC', `RbmCPtr' } -> `()' #}
+
+_RbmC'clone :: ForeignPtr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'clone x = _RbmC'preAlloc $ _RbmC'cloneImpl x
+
+
+{-
+{#fun unsafe tcm_cRBM_Set_weights as _RbmC'setWeightsImpl
+  { `RbmCPtr', `ComplexCFloatPtr', `Int' } -> `()' #}
+
+_RbmC'setWeights :: Ptr RbmC -> V.Vector (Complex Float) -> IO ()
+_RbmC'setWeights rbm weights = do
+  n <- _rbmC'sizeVisible <$> peek rbm
+  m <- _rbmC'sizeHidden <$> peek rbm
+  if n * m == V.length weights
+    then unsafeWith (coerce weights) (_RbmC'setWeightsImpl rbm)
+    else error "_RbmC'setWeights: Incompatible dimensions."
+
+{#fun unsafe tcm_cRBM_Set_visible as _RbmC'setVisibleImpl
+  { `RbmCPtr', `ComplexCFloatPtr', `Int' } -> `()' #}
+
+_RbmC'setVisible :: Ptr RbmC -> V.Vector (Complex Float) -> IO ()
+_RbmC'setVisible rbm visible = do
+  n <- _rbmC'sizeVisible <$> peek rbm
+  if n == V.length visible
+    then unsafeWith (coerce visible) (_RbmC'setVisibleImpl rbm)
+    else error "_RbmC'setVisible: Incompatible dimensions."
+
+{#fun unsafe tcm_cRBM_Set_hidden as _RbmC'setHiddenImpl
+  { `RbmCPtr', `ComplexCFloatPtr', `Int' } -> `()' #}
+
+_RbmC'setHidden :: Ptr RbmC -> V.Vector (Complex Float) -> IO ()
+_RbmC'setHidden rbm hidden = do
+  m <- _rbmC'sizeHidden <$> peek rbm
+  if m == V.length hidden
+    then unsafeWith (coerce hidden) (_RbmC'setHiddenImpl rbm)
+    else error "_RbmC'setHidden: Incompatible dimensions."
+
+_RbmC'eqDim :: Ptr RbmC -> Ptr RbmC -> Bool
+_RbmC'eqDim x y = unsafePerformIO $
+  (&&) <$> ((==) <$> (_rbmC'sizeVisible <$> peek x) <*> (_rbmC'sizeVisible <$> peek y))
+       <*> ((==) <$> (_rbmC'sizeHidden <$> peek x) <*> (_rbmC'sizeHidden <$> peek y))
+
+_RbmC'binOp :: (Ptr RbmC -> Ptr RbmC -> Ptr RbmC -> IO ())
+            -> Ptr RbmC -> Ptr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'binOp cFunc x y
+  | x `_RbmC'eqDim` y = _RbmC'preAlloc $ cFunc x y
+  | otherwise = error "_RbmC'binOp: Incompatible dimensions."
+
+{#fun unsafe tcm_cRBM_Plus as _RbmC'plusImpl
+  { withForeignPtr* `ForeignPtr RbmC', `RbmCPtr', `RbmCPtr' } -> `()' #}
+
+_RbmC'plus :: Ptr RbmC -> Ptr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'plus = _RbmC'binOp _RbmC'plusImpl
+
+{#fun unsafe tcm_cRBM_Minus as _RbmC'minusImpl
+  { `RbmCPtr', `RbmCPtr', `RbmCPtr' } -> `()' #}
+
+_RbmC'minus :: Ptr RbmC -> Ptr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'minus = _RbmC'binOp _RbmC'minusImpl
+
+{#fun unsafe tcm_cRBM_Multiply as _RbmC'multiplyImpl
+  { `RbmCPtr', `RbmCPtr', `RbmCPtr' } -> `()' #}
+
+_RbmC'multiply :: Ptr RbmC -> Ptr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'multiply = _RbmC'binOp _RbmC'multiplyImpl
+
+{#fun unsafe tcm_cRBM_Divide as _RbmC'divideImpl
+  { `RbmCPtr', `RbmCPtr', `RbmCPtr' } -> `()' #}
+
+_RbmC'divide :: Ptr RbmC -> Ptr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'divide = _RbmC'binOp _RbmC'divideImpl
+
+{#fun unsafe tcm_cRBM_Negate as _RbmC'negateImpl
+  { `RbmCPtr', `RbmCPtr' } -> `()' #}
+
+_RbmC'negate :: Ptr RbmC -> IO (ForeignPtr RbmC)
+_RbmC'negate x = _RbmC'preAlloc $ _RbmC'negateImpl x
+-}
+
+
+data Measurement a = Measurement { _measurementMean :: !a, _measurementVar :: !a }
   deriving (Show, Generic)
 
 instance NFData a => NFData (Measurement a)
@@ -107,192 +226,8 @@ instance Storable (Measurement Float) where
                                {#set tcm_sMeasurement->var#} p (coerce v)
 
 
-{#fun unsafe tcm_cRBM_Create as _newRbmC { `Int', `Int' } -> `RbmC' #}
+{#fun unsafe tcm_cRBM_heisenberg_1d as _RbmC'heisenberg1D
+  { withForeignPtr* `ForeignPtr RbmC', `Int', `Int', alloca- `Measurement Float' peek* } -> `()' #}
 
-{#fun unsafe tcm_zRBM_Create as _newRbmZ { `Int', `Int' } -> `RbmZ' #}
 
-{#fun unsafe tcm_cMCMC_Create as
-  _newMcmcImplC { `RbmC', `ComplexCFloatPtr' } -> `McmcC' #}
-
-{#fun unsafe tcm_zMCMC_Create as
-  _newMcmcImplZ { `RbmZ', `ComplexCDoublePtr' } -> `McmcZ' #}
-
-_newMcmcC :: RbmC -> V.Vector (Complex CFloat) -> IO McmcC
-_newMcmcC rbm spin = V.unsafeWith spin (_newMcmcImplC rbm)
-
-_newMcmcZ :: RbmZ -> V.Vector (Complex CDouble) -> IO McmcZ
-_newMcmcZ rbm spin = V.unsafeWith spin (_newMcmcImplZ rbm)
-
-{#fun pure unsafe tcm_cRBM_Size_visible as _sizeVisibleC { `RbmC' } -> `Int' #}
-
-{#fun pure unsafe tcm_zRBM_Size_visible as _sizeVisibleZ { `RbmZ' } -> `Int' #}
-
-{#fun pure unsafe tcm_cRBM_Size_hidden  as _sizeHiddenC  { `RbmC' } -> `Int' #}
-
-{#fun pure unsafe tcm_zRBM_Size_hidden  as _sizeHiddenZ  { `RbmZ' } -> `Int' #}
-
-{#fun unsafe tcm_cRBM_Print as _printRbmC { `RbmC' } -> `()' #}
-
-{#fun unsafe tcm_zRBM_Print as _printRbmZ { `RbmZ' } -> `()' #}
-
-{#fun unsafe tcm_cMCMC_Print as _printMcmcC { `McmcC' } -> `()' #}
-
-{#fun unsafe tcm_zMCMC_Print as _printMcmcZ { `McmcZ' } -> `()' #}
-
-{#fun unsafe tcm_cRBM_Set_weights as
-  _unsafeSetWeightsC { `RbmC', `ComplexCFloatPtr' } -> `()' #}
-
-{#fun unsafe tcm_zRBM_Set_weights as
-  _unsafeSetWeightsZ { `RbmZ', `ComplexCDoublePtr' } -> `()' #}
-
-_setWeightsC :: RbmC -> V.Vector (Complex CFloat) -> IO ()
-_setWeightsC rbm weights
-  | _sizeHiddenC rbm * _sizeVisibleC rbm == V.length weights =
-      V.unsafeWith weights (_unsafeSetWeightsC rbm)
-  | otherwise = error "_setWeightsC: Incompatible dimensions."
-
-_setWeightsZ :: RbmZ -> V.Vector (Complex CDouble) -> IO ()
-_setWeightsZ rbm weights
-  | _sizeHiddenZ rbm * _sizeVisibleZ rbm == V.length weights =
-      V.unsafeWith weights (_unsafeSetWeightsZ rbm)
-  | otherwise = error "_setWeightsZ: Incompatible dimensions."
-
-{#fun unsafe tcm_cRBM_Set_visible as
-  _unsafeSetVisibleC { `RbmC', `ComplexCFloatPtr' } -> `()' #}
-
-{#fun unsafe tcm_zRBM_Set_visible as
-  _unsafeSetVisibleZ { `RbmZ', `ComplexCDoublePtr' } -> `()' #}
-
-_setVisibleC :: RbmC -> V.Vector (Complex CFloat) -> IO ()
-_setVisibleC rbm visible
-  | _sizeVisibleC rbm == V.length visible =
-      V.unsafeWith visible (_unsafeSetVisibleC rbm)
-  | otherwise = error "_setVisibleC: Incompatible dimensions."
-
-_setVisibleZ :: RbmZ -> V.Vector (Complex CDouble) -> IO ()
-_setVisibleZ rbm visible
-  | _sizeVisibleZ rbm == V.length visible =
-      V.unsafeWith visible (_unsafeSetVisibleZ rbm)
-  | otherwise = error "_setVisibleZ: Incompatible dimensions."
-
-{#fun unsafe tcm_cRBM_Set_hidden as
-  _unsafeSetHiddenC { `RbmC', `ComplexCFloatPtr' } -> `()' #}
-
-{#fun unsafe tcm_zRBM_Set_hidden as
-  _unsafeSetHiddenZ { `RbmZ', `ComplexCDoublePtr' } -> `()' #}
-
-_setHiddenC :: RbmC -> V.Vector (Complex CFloat) -> IO ()
-_setHiddenC rbm hidden
-  | _sizeHiddenC rbm == V.length hidden =
-       V.unsafeWith hidden (_unsafeSetHiddenC rbm)
-  | otherwise = error "_setHiddenC: Incompatible dimensions."
-
-_setHiddenZ :: RbmZ -> V.Vector (Complex CDouble) -> IO ()
-_setHiddenZ rbm hidden
-  | _sizeHiddenZ rbm == V.length hidden =
-       V.unsafeWith hidden (_unsafeSetHiddenZ rbm)
-  | otherwise = error "_setHiddenZ: Incompatible dimensions."
-
-{#fun unsafe tcm_cRBM_Clone as _cloneRbmC { `RbmC' } -> `RbmC' #}
-
-{#fun unsafe tcm_zRBM_Clone as _cloneRbmZ { `RbmZ' } -> `RbmZ' #}
-
-{#fun unsafe tcm_cRBM_caxpby as
-  _caxpbyRbmImplC
-    { `CFloat', `CFloat', `RbmC', `CFloat', `CFloat', `RbmC' } -> `()' #}
-
-{#fun unsafe tcm_zRBM_zaxpby as
-  _zaxpbyRbmImplZ
-    { `CDouble', `CDouble', `RbmZ', `CDouble', `CDouble', `RbmZ' } -> `()' #}
-
-_caxpbyRbmC :: Complex CFloat -> RbmC -> Complex CFloat -> RbmC -> IO ()
-_caxpbyRbmC (ar :+ ai) x (br :+ bi) y
-  | _sizeVisibleC x == _sizeVisibleC y && _sizeHiddenC x == _sizeHiddenC y =
-      _caxpbyRbmImplC ar ai x br bi y
-  | otherwise = error "_caxpbyRbmC: Incompatible dimensions."
-
-_zaxpbyRbmZ :: Complex CDouble -> RbmZ -> Complex CDouble -> RbmZ -> IO ()
-_zaxpbyRbmZ (ar :+ ai) x (br :+ bi) y
-  | _sizeVisibleZ x == _sizeVisibleZ y && _sizeHiddenZ x == _sizeHiddenZ y =
-      _zaxpbyRbmImplZ ar ai x br bi y
-  | otherwise = error "_zaxpbyRbmZ: Incompatible dimensions."
-
-{#fun unsafe tcm_cRBM_cscale as
-  _cscaleRbmImplC { `CFloat', `CFloat', `RbmC' } -> `()' #}
-
-{#fun unsafe tcm_zRBM_zscale as
-  _zscaleRbmImplZ { `CDouble', `CDouble', `RbmZ' } -> `()' #}
-
-_cscaleRbmC :: Complex CFloat -> RbmC -> IO ()
-_cscaleRbmC (ar :+ ai) x = _cscaleRbmImplC ar ai x
-
-_zscaleRbmZ :: Complex CDouble -> RbmZ -> IO ()
-_zscaleRbmZ (ar :+ ai) x = _zscaleRbmImplZ ar ai x
-
-{#fun pure unsafe tcm_cMCMC_Log_wf as
-    _logWFC { `McmcC', alloca- `Complex CFloat' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_zMCMC_Log_wf as
-    _logWFZ { `McmcZ', alloca- `Complex CDouble' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_cMCMC_Log_quotient_wf1 as
-    _logQuotientWF1C
-      { `McmcC', `Int', alloca- `Complex CFloat' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_zMCMC_Log_quotient_wf1 as
-    _logQuotientWF1Z
-      { `McmcZ', `Int', alloca- `Complex CDouble' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_cMCMC_Log_quotient_wf2 as
-    _logQuotientWF2C
-      { `McmcC', `Int', `Int', alloca- `Complex CFloat' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_zMCMC_Log_quotient_wf2 as
-    _logQuotientWF2Z
-      { `McmcZ', `Int', `Int', alloca- `Complex CDouble' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_cMCMC_Propose1 as
-    _propose1C { `McmcC', `Int' } -> `Float' #}
-
-{#fun pure unsafe tcm_zMCMC_Propose1 as
-    _propose1Z { `McmcZ', `Int' } -> `Double' #}
-
-{#fun pure unsafe tcm_cMCMC_Propose2 as
-    _propose2C { `McmcC', `Int', `Int' } -> `Float' #}
-
-{#fun pure unsafe tcm_zMCMC_Propose2 as
-    _propose2Z { `McmcZ', `Int', `Int' } -> `Double' #}
-
-{#fun unsafe tcm_cMCMC_Accept1 as _accept1C { `McmcC', `Int' } -> `()' #}
-
-{#fun unsafe tcm_zMCMC_Accept1 as _accept1Z { `McmcZ', `Int' } -> `()' #}
-
-{#fun unsafe tcm_cMCMC_Accept2 as
-    _accept2C { `McmcC', `Int', `Int' } -> `()' #}
-
-{#fun unsafe tcm_zMCMC_Accept2 as
-    _accept2Z { `McmcZ', `Int', `Int' } -> `()' #}
-
-{#fun pure unsafe tcm_cHH1DOpen_Local_energy as
-    _locEHH1DOpenC { `McmcC', alloca- `Complex CFloat' peek* } -> `()' #}
-
-{#fun pure unsafe tcm_zHH1DOpen_Local_energy as
-    _locEHH1DOpenZ { `McmcZ', alloca- `Complex CDouble' peek* } -> `()' #}
-
-{#fun unsafe tcm_cDelta_well_update as
-    _upDeltaWellImplC { `Float', `RbmC', `RbmC', id `Ptr CFloat' } -> `()' #}
-
-{#fun unsafe tcm_zDelta_well_update as
-    _upDeltaWellImplZ { `Double', `RbmZ', `RbmZ', id `Ptr CDouble' } -> `()' #}
-
-_upDeltaWellC :: Float -> RbmC -> RbmC -> V.Vector Float -> IO ()
-_upDeltaWellC k p x rs =
-  V.unsafeWith rs (\ v -> _upDeltaWellImplC k p x (coerce v))
-
-_upDeltaWellZ :: Double -> RbmZ -> RbmZ -> V.Vector Double -> IO ()
-_upDeltaWellZ k p x rs =
-  V.unsafeWith rs (\ v -> _upDeltaWellImplZ k p x (coerce v))
-
-{#fun unsafe tcm_cRBM_mcmc_block as
-  _mcmcBlockC { `RbmC', `Int', `Int', alloca- `Measurement Float' peek* } -> `()' #}
 

@@ -29,46 +29,58 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef TCM_SWARM_FORCE_HPP
-#define TCM_SWARM_FORCE_HPP
+#include <complex>
 
-#include "detail/axpy.hpp"
-#include "detail/config.hpp"
-#include "detail/gemv.hpp"
+#include <gtest/gtest.h>
 
-#include <algorithm>
-#include <numeric>
+// #include "../detail/axpy.hpp"
+// #include "../rbm_spin.hpp"
+#include <mkl_cblas.h>
 
-#include <gsl/multi_span>
-#include <gsl/span>
+#define EXPECT_CFLOAT_NEAR(val1, val2, abs_error)                         \
+    EXPECT_NEAR(val1.real(), val2.real(), abs_error);                     \
+    EXPECT_NEAR(val1.imag(), val2.imag(), abs_error);
 
-TCM_SWARM_BEGIN_NAMESPACE
+#if 0
+extern "C" {
+void cblas_caxpy(int, void const*, void const*, int,
+    void*, int);
+} // external "C"
+#endif
 
-template <class C, std::ptrdiff_t Steps, std::ptrdiff_t Parameters>
-auto force(gsl::span<C const, Steps> const energies, C const mean_energy,
-    gsl::multi_span<C const, Steps, Parameters> const derivatives,
-    gsl::span<C, Parameters> const out, gsl::span<C, Steps> const workspace)
-        noexcept(!detail::gsl_can_throw())
+TEST(Axpy, CFloat)
 {
-    auto const number_steps = energies.size();
-    auto const number_parameters = derivatives.template extent<1>();
-    Expects(derivatives.template extent<0>() == number_steps);
-    Expects(out.size() == number_parameters);
-    Expects(workspace.size() == number_steps);
-    Expects(number_steps > 0 && number_parameters > 0);
+    // using Rbm = tcm::RbmBase<std::complex<float>>;
+    using vector_type = std::vector<std::complex<float>>; // Rbm::vector_type;
 
-    using R = typename C::value_type;
-    // workspace <- E - 〈E〉
-    std::fill(begin(workspace), end(workspace), -mean_energy);
-    mkl::axpy(C{1}, energies, workspace);
+    vector_type x(5000);
+    vector_type y(5000);
+    std::complex<float> x0 = {4.6f, 0.01f};
+    std::complex<float> y0 = {-5.0f, 2.3f};
+    std::complex<float> a = {1.0f, 0};
 
-    // out <- 1/number_steps * O^H (E - 〈E〉)
-    mkl::gemv(mkl::Layout::RowMajor, mkl::Transpose::ConjTrans,
-        C{1} / gsl::narrow<R>(energies.size()), derivatives,
-        gsl::span<C const, Steps>{workspace}, C{0}, out);
+    std::fill(std::begin(x), std::end(x), x0);
+    std::fill(std::begin(y), std::end(y), y0);
+
+#if 0
+    tcm::mkl::axpy(a,
+        gsl::span<std::complex<float> const>{x},
+        gsl::span<std::complex<float>>{y});
+#elif 1
+    cblas_caxpy(5000, &a, x.data(), 1, y.data(), 1);
+#else
+    int n = 5000;
+    int inc = 1;
+    caxpy_(&n, &a, x.data(), &inc, y.data(), &inc);
+#endif
+
+    for (unsigned i = 0; i < x.size(); ++i) {
+        EXPECT_CFLOAT_NEAR(y[i], (a * x0 + y0), 1.0E-5f);
+    }
 }
 
-TCM_SWARM_END_NAMESPACE
-
-#endif // TCM_SWARM_FORCE_HPP
-
+int main(int argc, char** argv)
+{
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}

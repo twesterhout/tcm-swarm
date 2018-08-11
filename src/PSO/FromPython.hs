@@ -8,6 +8,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
 
 -- |
@@ -20,34 +21,23 @@
 module PSO.FromPython
   ( fromPyComplex
   , fromPyList
-  , fromPyFile
+  , readVector
+  , readMatrix
   ) where
 
-import Data.Complex
-import Data.Maybe
-import Control.Monad
 import Control.Applicative
-import Data.List (transpose)
-import Data.Text (Text)
-import Data.Text.IO (hGetLine)
-import qualified Data.Text as T
+import Control.Monad
+import Debug.Trace
 import Data.Attoparsec.Text
+import Data.Complex
+import Data.List (transpose)
+import Data.Maybe
+import Data.Text (Text)
+import qualified Data.Text as T
+import Data.Text.IO (hGetLine)
 import qualified Data.Vector.Storable as V
 import GHC.Float
-import System.IO (withFile, Handle, IOMode(..), FilePath)
-import PSO.Neural
-
-fromPyComplex :: Parser (Complex Double)
-fromPyComplex = do
-  x <- double
-  skipMany space
-  sign <- satisfy (\c -> c == '+' || c == '-')
-  skipMany space
-  y <- double
-  char 'j'
-  if sign == '+'
-     then return (x :+ y)
-     else return (x :+ (-y))
+import System.IO (FilePath, Handle, IOMode(..), withFile)
 
 between :: Parser start -> Parser stop -> Parser a -> Parser a
 between start stop p = do
@@ -56,32 +46,30 @@ between start stop p = do
   stop
   return x
 
+fromPyComplex :: Parser (Complex Double)
+fromPyComplex = pBoth <|> pImag
+  where
+    pImag = do
+      y <- double
+      char 'j'
+      return (0 :+ y)
+    pBoth =
+      between (char '(') (char ')') $ do
+        x <- double
+        y <- double
+        char 'j'
+        return (x :+ y)
+
 fromPyList :: Parser a -> Parser [a]
-fromPyList p =
-  let stripSpaces = between (skipMany space) (skipMany space)
-      element = stripSpaces $ (between (char '(') (char ')') (stripSpaces p))
-                              <|> (stripSpaces p)
-   in between (char '[') (char ']') (element `sepBy'` char ',')
+fromPyList p = between (char '[') (char ']') (p `sepBy'` string ", ")
 
 readVector :: Text -> Either String (V.Vector (Complex Float))
 readVector txt =
-  V.fromList <$> fmap (\(x :+ y) -> double2Float x :+ double2Float y)
-             <$> parseOnly (fromPyList fromPyComplex <* endOfInput) txt
+  V.fromList <$> fmap (\(x :+ y) -> double2Float x :+ double2Float y) <$>
+  parseOnly (fromPyList fromPyComplex <* endOfInput) txt
 
 readMatrix :: Text -> Either String (V.Vector (Complex Float))
 readMatrix txt =
-  V.fromList <$> fmap (\(x :+ y) -> double2Float x :+ double2Float y)
-             <$> concat
-             <$> transpose
-             <$> parseOnly (fromPyList (fromPyList fromPyComplex) <* endOfInput) txt
-
-fromPyFile :: FilePath -> IO (Rbm (Complex Float))
-fromPyFile name = withFile name ReadMode toRbm
-  where toRight (Right x) = return x
-        toRight (Left x)  = error x
-        toRbm h = do
-          a <- toRight <$> readVector <$> hGetLine h
-          b <- toRight <$> readVector <$> hGetLine h
-          w <- toRight <$> readMatrix <$> hGetLine h
-          join $ mkRbm <$> a <*> b <*> w
-
+  V.fromList <$> fmap (\(x :+ y) -> double2Float x :+ double2Float y) <$> concat <$>
+  transpose <$>
+    parseOnly (fromPyList (fromPyList fromPyComplex >>= \xs -> trace (show xs) (return xs)) ) txt

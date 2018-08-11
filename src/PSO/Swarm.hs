@@ -1,4 +1,6 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -136,7 +138,11 @@ import qualified Data.Vector.Generic as GV
 import qualified Data.Vector.Storable as V
 
 import Control.Arrow
-import Control.Lens
+-- import Control.Lens
+import Lens.Micro
+import Lens.Micro.TH
+import Lens.Micro.Extras
+import Control.DeepSeq
 import Control.Monad
 import Control.Monad.Primitive
 import Control.Monad.Reader
@@ -145,11 +151,12 @@ import qualified Foreign
 import Foreign.Storable.Tuple
 
 import GHC.Float (float2Double)
+import GHC.Generics(Generic)
 
-import qualified Numeric.LinearAlgebra as LA
-import Numeric.LinearAlgebra.Devel(matrixFromVector, orderOf, MatrixOrder(..))
-import Numeric.LinearAlgebra.Data(flatten, tr)
-import qualified Numeric.LinearAlgebra.Devel as LADevel
+-- import qualified Numeric.LinearAlgebra as LA
+-- import Numeric.LinearAlgebra.Devel(matrixFromVector, orderOf, MatrixOrder(..))
+-- import Numeric.LinearAlgebra.Data(flatten, tr)
+-- import qualified Numeric.LinearAlgebra.Devel as LADevel
 
 import PSO.VectorSpace
 import PSO.Random
@@ -167,9 +174,10 @@ data Bee α β r = Bee
   { _beeState :: !α
   , _beeGuide :: !β
   , _beeVal   :: !r
-  } deriving (Show)
+  } deriving (Generic, Show, NFData)
 
 makeLensesWith abbreviatedFields ''Bee
+
 
 -- | Point in the classical phase space.
 --
@@ -181,7 +189,7 @@ makeLensesWith abbreviatedFields ''Bee
 data CMState χ = CMState
   { _cmstatePos :: !χ
   , _cmstateVel :: !χ
-  } deriving (Show)
+  } deriving (Generic, Show, NFData)
 
 makeLensesWith abbreviatedFields ''CMState
 
@@ -190,7 +198,7 @@ makeLensesWith abbreviatedFields ''CMState
 -- /Note:/ use 'pos' lens to access the field.
 data QMState χ = QMState
   { _qmstatePos :: !χ
-  } deriving (Show)
+  } deriving (Generic, Show, NFData)
 
 makeLensesWith abbreviatedFields ''QMState
 
@@ -225,9 +233,11 @@ class (LocalGuide β α r) => GlobalGuide γ β α r where
 data BeeGuide χ r = BeeGuide
   { _beeguidePos :: !χ -- ^ Position.
   , _beeguideVal :: !r -- ^ Fitness value.
-  } deriving (Show)
+  } deriving (Generic, Show)
 
 makeLensesWith abbreviatedFields ''BeeGuide
+
+instance (NFData χ, NFData r) => NFData (BeeGuide χ r)
 
 -- | We compare guides by their fitness values.
 instance Eq r => Eq (BeeGuide χ r) where
@@ -272,10 +282,12 @@ data SwarmGuide χ r = SwarmGuide
   { _swarmguidePos       :: !χ
   , _swarmguideVal       :: !r
   , _swarmguideIteration :: !Int
-  , _swarmguideVar       :: !r
-  } deriving (Show)
+  , _swarmguideVar       :: () -- !r
+  } deriving (Generic, Show)
 
 makeLensesWith abbreviatedFields ''SwarmGuide
+
+instance (NFData χ, NFData r) => NFData (SwarmGuide χ r)
 
 -- | Calculates the mean value of a sequence.
 mean :: (Fractional a, Foldable v) => v a -> a
@@ -291,11 +303,11 @@ variance xs = let m = mean xs in mean . fmap (\x -> (x - m)^^2) $ xs
 -- 'updateGlobalG' increases the iteration by @1@). And finally, each iteration
 -- we compute the variance \(\operatorname{Var}\{f(\psi^{(n)}_i)\}_i\) in the
 -- fitness values of bees.
-instance (LocalGuide (BeeGuide χ r) α r, Ord (BeeGuide χ r), Fractional r)
+instance (LocalGuide (BeeGuide χ r) α r, Ord (BeeGuide χ r))
   => GlobalGuide (SwarmGuide χ r) (BeeGuide χ r) α r where
     mkGlobalG xs = SwarmGuide (x ^. pos) (x ^. val) 0 var
       where x   = minimum . fmap (view guide) $ xs
-            var = variance . fmap (view val) $ xs
+            var = () -- variance . fmap (view val) $ xs
     updateGlobalG xs g = mkGlobalG xs & iteration .~ (g ^. iteration + 1)
 
 -- | Given global guide and bee in the @n@'th iteration, calculates the phase of
@@ -532,6 +544,7 @@ instance (Monad m, Foreign.Storable ξ, DeltaWell m λ ξ)
   => DeltaWell m λ (V.Vector ξ) where
     upDeltaWell κ p x = V.zipWithM (upDeltaWell κ) p x
 
+{-
 liftMatrix2M ::
      (Monad m, LA.Element α, LA.Element β, LA.Element γ,
       LA.Container V.Vector α, Num α,
@@ -551,6 +564,7 @@ liftMatrix2M f m1@(LA.size -> (r,c)) m2
 instance (Monad m, Num ξ, LA.Container V.Vector ξ, LA.Transposable (LA.Matrix ξ)(LA.Matrix ξ), DeltaWell m λ ξ)
   => DeltaWell m λ (LA.Matrix ξ) where
     upDeltaWell κ = liftMatrix2M (V.zipWithM (upDeltaWell κ))
+-}
 
 
 -- | Creates a QDPSO updater.
@@ -858,8 +872,13 @@ optimiseNDFromList ::
   -> PhaseUpdater m γ β α r
   -> (α -> m r)
   -> (Swarm m γ β α r -> Bool)
-  -> m [Swarm m γ β α r]
-optimiseNDFromList states updater func predicate = do
-  swarm <- mkSwarmFromList states updater func
-  iterateWhileM (not . predicate) updateSwarm swarm
-
+  -> (Swarm m γ β α r -> m ())
+  -> m (Swarm m γ β α r)
+optimiseNDFromList states updater func predicate process =
+  do
+    swarm <- mkSwarmFromList states updater func
+    go swarm
+  where
+        go x
+          | predicate x = return x
+          | otherwise   = process x >> updateSwarm x >>= go

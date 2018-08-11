@@ -1,4 +1,6 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -11,6 +13,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 -- |
 -- Module      : PSO.Neural
@@ -20,45 +23,60 @@
 -- Maintainer  : t.westerhout@student.ru.nl
 -- Stability   : experimental
 module PSO.Neural
-  ( mutableMcmcLoop
-  , energyHH1DOpen
+  (
+  -- mutableMcmcLoop
+  -- , energyHH1DOpen
   -- , energyHH1DOpenC
-  , energyHH1DOpenMKLC
+  -- , energyHH1DOpenMKLC
   -- , energyHH1DOpenZ
   -- , energyVarHH1DOpen
-  , RBM(..)
+  -- , RBM(..)
+    Rbm
   , mkRbm
   , uniformRbm
-  , MCMC(..)
-  , unsafeFreezeMcmc
+  , IsRbm(..)
+  , fromRbm
+  , toRbm
   , unsafeFreezeRbm
-  , Rbm
-  , Mcmc
-  , HH1DOpen(..)
-  , listAll
+  , unsafeThawRbm
+  , mcmcHeisenberg1D
+  -- , MCMC(..)
+  -- , unsafeFreezeMcmc
+  -- , Mcmc
+  -- , HH1DOpen(..)
+  -- , listAll
   , Measurement(..)
+  , HasMean(..)
+  , HasVar(..)
   ) where
+
+import Prelude hiding (map, mapM, zipWith, zipWithM)
+import qualified Prelude as Prelude
+
+import Control.Exception(assert)
+import Control.Monad (Monad(..), (>=>), (<=<))
+import Control.Monad.Primitive
+import Control.Monad.ST
+
+import Data.Bits
+import Data.Coerce
+import Data.Complex
+import Data.Functor.Identity
+import Data.NumInstances.Tuple
+import qualified Data.Vector.Storable as V
+import qualified Data.Vector.Storable.Mutable as MV
+import Data.Vector.Fusion.Stream.Monadic (Stream(..), Step(..), SPEC(..))
+import qualified Data.Vector.Fusion.Stream.Monadic as Stream
+import qualified Data.Vector.Fusion.Bundle.Monadic as Bundle
 
 import Foreign.C.Types
 import Foreign.Storable
 import Foreign.ForeignPtr
 
+import GHC.Generics (Generic)
 
-import GHC.Generics
-import Control.Lens
-import Control.DeepSeq
-import Control.Monad
-import Control.Monad.Primitive
-import Control.Monad.Reader
-import Control.Monad.ST
-import Data.Bits
-import Data.Coerce
-import Data.Complex
-import Data.NumInstances.Tuple
-import qualified Data.Vector.Storable as V
-import Pipes
-import qualified Pipes.Prelude as P
-import qualified System.Random.MWC as MWC
+import Lens.Micro
+import Lens.Micro.TH
 
 import System.IO.Unsafe
 
@@ -79,90 +97,179 @@ type instance RealOf CDouble = CDouble
 
 type instance RealOf (Complex a) = a
 
-type family RbmPtr a
+type family RbmCore a
 
-type instance RbmPtr (Complex Float) = RbmC
+type instance RbmCore Float = RbmC
 
-type instance RbmPtr (Complex Double) = RbmZ
+-- type instance RbmCore (Complex Double) = RbmZ
 
-data Rbm a =
-  R !(RbmPtr a) deriving (Generic)
+newtype Rbm a = R (ForeignPtr (RbmCore a)) deriving (Generic)
 
-data MRbm s a =
-  MR !(RbmPtr a)
+newtype MRbm s a = MR (ForeignPtr (RbmCore a)) deriving (Generic)
 
-class Storable a => RBM a where
+
+class Storable a => IsRbm a where
   newRbm :: PrimMonad m => Int -> Int -> m (MRbm (PrimState m) a)
   cloneRbm :: PrimMonad m => Rbm a -> m (MRbm (PrimState m) a)
-  setWeights :: PrimMonad m => MRbm (PrimState m) a -> V.Vector a -> m ()
-  setVisible :: PrimMonad m => MRbm (PrimState m) a -> V.Vector a -> m ()
-  setHidden :: PrimMonad m => MRbm (PrimState m) a -> V.Vector a -> m ()
-  sizeVisible :: Rbm a -> Int
-  sizeHidden :: Rbm a -> Int
+  getWeights :: PrimMonad m => MRbm (PrimState m) a -> m (V.MVector (PrimState m) a, V.MVector (PrimState m) a)
+  getVisible :: PrimMonad m => MRbm (PrimState m) a -> m (V.MVector (PrimState m) a, V.MVector (PrimState m) a)
+  getHidden  :: PrimMonad m => MRbm (PrimState m) a -> m (V.MVector (PrimState m) a, V.MVector (PrimState m) a)
   sizeWeights :: Rbm a -> Int
-  sizeWeights rbm = sizeVisible rbm * sizeHidden rbm
-  debugPrintRbm :: Rbm a -> IO ()
+  sizeVisible :: Rbm a -> Int
+  sizeHidden  :: Rbm a -> Int
+  -- debugPrintRbm :: Rbm a -> IO ()
+
+unsafeThawRbm :: PrimMonad m => Rbm a -> m (MRbm (PrimState m) a)
+unsafeThawRbm (R p) = return (MR p)
 
 unsafeFreezeRbm :: PrimMonad m => MRbm (PrimState m) a -> m (Rbm a)
 unsafeFreezeRbm (MR p) = return (R p)
 
-mkRbm :: (PrimMonad m, RBM a) => V.Vector a -> V.Vector a -> V.Vector a -> m (Rbm a)
-mkRbm a@(V.length -> n) b@(V.length -> m) w
-  | V.length w == n * m = newRbm n m >>= \rbm ->
-      setVisible rbm a >> setHidden rbm b >> setWeights rbm w >> unsafeFreezeRbm rbm
-  | otherwise           = error "mkRbm: Dimensions mismatch."
+-- setWeights :: PrimMonad m => MRbm (PrimState m) a -> V.Vector a -> V.Vector a -> m ()
+-- setWeights mrbm wR wI = do
+--   (mwR, mwI) <- getWeights mrbm
+--   V.copy mwR wR
+--   V.copy mwI wI
+-- 
+-- setVisible :: PrimMonad m => MRbm (PrimState m) a -> V.Vector a -> V.Vector a -> m ()
+-- setVisible mrbm aR aI = do
+--   (maR, maI) <- getVisible mrbm
+--   V.copy maR aR
+--   V.copy maI aI
+-- 
+-- setHidden :: PrimMonad m => MRbm (PrimState m) a -> V.Vector a -> V.Vector a -> m ()
+-- setHidden mrbm bR bI = do
+--   (mbR, mbI) <- getHidden mrbm
+--   V.copy mbR bR
+--   V.copy mbI bI
 
+
+fromRbm :: (Monad m, IsRbm a) => Rbm a -> Stream.Stream m a
+fromRbm rbm = Bundle.elements $ Bundle.fromVectors (runST $ unsafeThawRbm rbm >>= go)
+  where
+    go :: IsRbm a => MRbm s a -> ST s [V.Vector a]
+    go mrbm = do
+      (wR, wI) <- getWeights mrbm
+      (aR, aI) <- getVisible mrbm
+      (bR, bI) <- getHidden mrbm
+      Prelude.mapM V.freeze [wR, wI, aR, aI, bR, bI]
+
+toRbm :: (PrimMonad m, IsRbm a) => Int -> Int -> Stream.Stream m a -> m (Rbm a)
+toRbm n m (Stream step t) = do
+  mrbm <- newRbm n m
+  (wR, wI) <- getWeights mrbm
+  (aR, aI) <- getVisible mrbm
+  (bR, bI) <- getHidden mrbm
+  copy SPEC wR (n * m) 0 t >>=
+    copy SPEC wI (n * m) 0 >>=
+      copy SPEC aR n 0 >>=
+        copy SPEC aI n 0 >>=
+          copy SPEC bR m 0 >>=
+            copy SPEC bI m 0
+  unsafeFreezeRbm mrbm
+  where
+    copy !_ !v !size !i s
+      | i < size = step s >>= \r ->
+        case r of
+          Yield x s' -> MV.write v i x >> copy SPEC v size (i + 1) s'
+          Skip    s' -> copy SPEC v size i s'
+          Done       -> error "No, we're not done yet!"
+      | otherwise = return s
+
+-- | Creates a new Restricted Boltzmann Machine with given weights.
+mkRbm :: IsRbm a
+      => V.Vector (Complex a) -- ^ Visible bias \(a^N\).
+      -> V.Vector (Complex a) -- ^ Hidden bias \(a^M\).
+      -> V.Vector (Complex a) -- ^ Weights \(a^{M\times N}\). *Column-major layout is assumed!*.
+      -> Rbm a
+mkRbm a@(V.length -> nx1) b@(V.length -> mx1) w@(V.length -> mxn)
+  | mxn == nx1 * mx1 = runST $ toRbm nx1 mx1 $ Bundle.elements $
+    Bundle.fromVectors [ realPart `V.map` w, imagPart `V.map` w
+                       , realPart `V.map` a, imagPart `V.map` a
+                       , realPart `V.map` b, imagPart `V.map` b
+                       ]
+  | otherwise = error "mkRbm: Dimensions mismatch."
+
+-- | Creates an RBM with weights distributed uniformly within given intervals.
 uniformRbm ::
-     (PrimMonad m, RBM a, UniformDist m a) => Int -> Int -> (a, a) -> m (Rbm a)
-uniformRbm n m bounds = do
-  a <- uniformVector n bounds
-  b <- uniformVector m bounds
-  w <- uniformVector (n * m) bounds
-  mkRbm a b w
+     (PrimMonad m, IsRbm a, Ord a, UniformDist m (Complex a))
+  => Int -- ^ Number of visible nodes.
+  -> Int -- ^ Number of hidden nodes.
+  -> (a, a) -- ^ Range for visible bias.
+  -> (a, a) -- ^ Range for hidden bias.
+  -> (a, a) -- ^ Range for weights.
+  -> m (Rbm a)
+uniformRbm !n !m !(amin, amax) !(bmin, bmax) !(wmin, wmax)
+  | n < 0 || m < 0 = error "uniformRbm: Negative dimensions??"
+  | amin > amax || bmin > bmax || wmin > wmax =
+    error "uniformRbm: Lower bound is per definition not \
+          \greater than the upper bound."
+  | otherwise = do
+    a <- uniformVector n (amin :+ amin, amax :+ amin)
+    b <- uniformVector m (bmin :+ bmin, bmin :+ bmax)
+    w <- uniformVector (n * m) (wmin :+ wmin, wmax :+ wmax)
+    return $ mkRbm a b w
 
-class RBM a => AXPBY λ a where
-  axpby :: PrimMonad m => λ -> Rbm a -> λ -> MRbm (PrimState m) a -> m ()
+instance IsRbm Float where
+  {-# INLINE newRbm #-}
+  newRbm n m = unsafeIOToPrim $ MR <$> _RbmC'construct n m
+  {-# INLINE cloneRbm #-}
+  cloneRbm (R p) = unsafeIOToPrim $ MR <$> _RbmC'clone p
+  {-# INLINE getWeights #-}
+  getWeights (MR p) = _RbmC'getWeights p
+  {-# INLINE getVisible #-}
+  getVisible (MR p) = _RbmC'getVisible p
+  {-# INLINE getHidden #-}
+  getHidden (MR p) = _RbmC'getHidden p
+  {-# INLINE sizeVisible #-}
+  sizeVisible (R fp) = unsafePerformIO $
+    withForeignPtr fp (peek >=> return . _rbmC'sizeVisible)
+  {-# INLINE sizeHidden #-}
+  sizeHidden (R fp) = unsafePerformIO $
+    withForeignPtr fp (peek >=> return . _rbmC'sizeHidden)
+  {-# INLINE sizeWeights #-}
+  sizeWeights x = sizeHidden x * sizeVisible x
 
-class RBM a => SCAL λ a where
-  scal :: PrimMonad m => λ -> MRbm (PrimState m) a -> m ()
+getDims :: IsRbm a => Rbm a -> (Int, Int)
+getDims x = (sizeVisible x, sizeHidden x)
+{-# INLINE getDims #-}
 
-type family McmcPtr a
+zipWithM :: (IsRbm a, IsRbm b, IsRbm c, PrimMonad m)
+         => (a -> b -> m c) -> Rbm a -> Rbm b -> m (Rbm c)
+zipWithM f x y = assert (getDims x == getDims y) $
+  toRbm (sizeVisible x) (sizeHidden x) $ Stream.zipWithM f (fromRbm x) (fromRbm y)
 
-type instance McmcPtr (Complex Float) = McmcC
+zipWith :: forall a b c. (IsRbm a, IsRbm b, IsRbm c)
+        => (a -> b -> c) -> Rbm a -> Rbm b -> Rbm c
+zipWith f x y = runST $ zipWithM f' x y
+  where f' :: a -> b -> ST s c
+        f' a b = return $ f a b
 
-type instance McmcPtr (Complex Double) = McmcZ
+mapM :: (IsRbm a, IsRbm b, PrimMonad m)
+     => (a -> m b) -> Rbm a -> m (Rbm b)
+mapM f x = toRbm (sizeVisible x) (sizeHidden x) $ Stream.mapM f $ fromRbm x
 
-data Mcmc a =
-  M !(McmcPtr a) !(RbmPtr a)
+map :: (IsRbm a, IsRbm b)
+     => (a -> b) -> Rbm a -> Rbm b
+map f x = runST $ mapM (return . f) x
 
-data MMcmc s a =
-  MM !(McmcPtr a) !(RbmPtr a)
+instance Num (Rbm Float) where
+  (+) x y = zipWith (+) x y
+  (-) x y = zipWith (-) x y
+  (*) x y = zipWith (*) x y
+  abs x = map abs x
+  signum x = map signum x
+  negate x = map negate x
+  fromInteger = undefined
 
-class RBM a => MCMC a where
-  newMcmc :: PrimMonad m => Rbm a -> V.Vector a -> m (MMcmc (PrimState m) a)
-  logWF :: Mcmc a -> a
-  logQuotient1 :: Mcmc a -> Int -> a
-  logQuotient2 :: Mcmc a -> Int -> Int -> a
-  propose1 :: Mcmc a -> Int -> RealOf a
-  propose2 :: Mcmc a -> Int -> Int -> RealOf a
-  update1 :: PrimMonad m => MMcmc (PrimState m) a -> Int -> m ()
-  update2 :: PrimMonad m => MMcmc (PrimState m) a -> Int -> Int -> m ()
-  debugPrintMcmc :: Mcmc a -> IO ()
-  -- getRbm :: Mcmc a -> Rbm a
+instance Scalable Float (Rbm Float) where
+  scale λ = map (*λ)
 
-unsafeFreezeMcmc :: PrimMonad m => MMcmc (PrimState m) a -> m (Mcmc a)
-unsafeFreezeMcmc (MM p q) = return (M p q)
+instance (PrimMonad m, DeltaWell m Float Float)
+  => DeltaWell m Float (Rbm Float) where
+    upDeltaWell κ p x = zipWithM (upDeltaWell κ) p x
 
-instance RBM (Complex Float) where
-  newRbm nrVis nrHid = unsafeIOToPrim $ liftM MR (_newRbmC nrVis nrHid)
-  cloneRbm (R p) = unsafeIOToPrim $ liftM MR (_cloneRbmC p)
-  setWeights (MR p) w = unsafeIOToPrim $ _setWeightsC p (coerce w)
-  setVisible (MR p) a = unsafeIOToPrim $ _setVisibleC p (coerce a)
-  setHidden (MR p) b = unsafeIOToPrim $ _setHiddenC p (coerce b)
-  sizeVisible (R p) = _sizeVisibleC p
-  sizeHidden (R p) = _sizeHiddenC p
-  debugPrintRbm (R p) = _printRbmC p
-
+{-
 instance RBM (Complex Double) where
   newRbm nrVis nrHid = unsafeIOToPrim $ liftM MR (_newRbmZ nrVis nrHid)
   cloneRbm (R p) = unsafeIOToPrim $ liftM MR (_cloneRbmZ p)
@@ -229,16 +336,6 @@ instance MCMC (Complex Double) where
   update2 (MM p _) flip1 flip2 = unsafeIOToPrim $ _accept2Z p flip1 flip2
   debugPrintMcmc (M p _) = _printMcmcZ p
 
-instance (PrimMonad m, Randomisable m Float)
-  => DeltaWell m Float (Rbm (Complex Float)) where
-    upDeltaWell κ p@(R pPtr) x@(R xPtr)
-      | sizeVisible p == sizeVisible x
-          && sizeHidden p == sizeHidden x =
-            let n = sizeVisible p
-                m = sizeHidden p
-                size = 2 * (n * m + n + m)
-             in V.replicateM size random >>= \ v ->
-                 unsafeIOToPrim (_upDeltaWellC κ pPtr xPtr v) >> return p
 
 mutableMcmcLoop ::
      (PrimMonad m)
@@ -325,7 +422,7 @@ energyHH1DOpen rbm offset steps =
                              (states mmcmc' 0 >-> P.drop offset
                                               >-> P.mapM func
                                               >-> P.take steps)
-{-
+
 energyHH1DOpenC :: forall m.
      ( PrimMonad m
      , Randomisable m Bool
@@ -367,18 +464,16 @@ energyHH1DOpenZ rbm offset steps =
               touchForeignPtr m >> return (coerce x)
 -}
 
-energyHH1DOpenMKLC :: forall m.
-     ( PrimMonad m
-     )
-  => Rbm (Complex Float) -> Int -> Int -> m (Measurement Float)
-energyHH1DOpenMKLC (R rbm) offset steps =
-  unsafeIOToPrim $ _mcmcBlockC rbm offset steps
+mcmcHeisenberg1D ::
+     PrimMonad m => Rbm Float -> Int -> Int -> m (Measurement Float)
+mcmcHeisenberg1D (R rbm) offset steps = unsafeIOToPrim $ _RbmC'heisenberg1D rbm offset steps
 
 instance Eq a => Eq (Measurement a) where
   (==) (Measurement _ x) (Measurement _ y) = x == y
 
 instance Ord a => Ord (Measurement a) where
-  (<=) (Measurement a x) (Measurement b y) = x <= y
+  -- (<=) (Measurement a x) (Measurement b y) = x <= y
+  (<=) (Measurement a x) (Measurement b y) = a <= b
 
 instance Num a => Num (Measurement a) where
   (+) (Measurement a b) (Measurement c d) = Measurement (a + c) (b + d)
@@ -393,6 +488,7 @@ instance Fractional a => Fractional (Measurement a) where
   (/) (Measurement a b) (Measurement c d) = Measurement (a / c) (b / d)
   recip (Measurement a b) = Measurement (recip a) (recip b)
 
+makeFields ''Measurement
 
 {-
 

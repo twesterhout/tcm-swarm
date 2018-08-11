@@ -33,7 +33,6 @@ module PSO.Random
     , mkMWCGenST
     , uniformList
     , uniformVector
-    , uniformMatrix
     , randomSpin
     ) where
 
@@ -52,8 +51,6 @@ import Foreign.C.Types(CDouble, CFloat)
 import qualified Foreign
 import qualified System.Random.Mersenne as Mersenne
 import qualified System.Random.MWC as MWC
-import Numeric.LinearAlgebra.Devel(mapMatrixWithIndexM)
-import qualified Numeric.LinearAlgebra as LA
 
 
 class (PrimMonad m) => Generator m g where
@@ -188,20 +185,6 @@ instance (Monad m, Foreign.Storable a, RandomScalable m a)
   => RandomScalable m (V.Vector a) where
     randScale = V.mapM randScale
 
--- liftMatrixM ::
---      ( Monad m
---      , LA.Element α
---      , LA.Element β
---      )
---   => (V.Vector α -> m (V.Vector β)) -> LA.Matrix α -> m (LA.Matrix β)
--- liftMatrixM f m@Matrix { irows = r, icols = c, xdat = d}
---     | isSlice m = matrixFromVector RowMajor r c (f (flatten m))
---     | otherwise = matrixFromVector (orderOf m) r c (f d)
-
-instance (Monad m, LA.Element a, Foreign.Storable a, RandomScalable m a)
-  => RandomScalable m (LA.Matrix a) where
-    randScale = mapMatrixWithIndexM (const randScale)
-
 -- instance (RandomScalable m a, GV.Vector v a) => RandomScalable m (v a) where
 --     randScale = GV.mapM randScale
 
@@ -212,11 +195,6 @@ uniformVector ::
      (Monad m, Foreign.Storable a, UniformDist m a)
   => Int -> (a, a) -> m (V.Vector a)
 uniformVector n = liftM V.fromList . uniformList n
-
-uniformMatrix ::
-     (Monad m, Foreign.Storable a, UniformDist m a)
-  => (Int, Int) -> (a, a) -> m (LA.Matrix a)
-uniformMatrix (m, n) = liftM (uncurry (LA.><) (m, n)) . uniformList (n*m)
 
 randomSpin ::
      (Monad m, Foreign.Storable a, Num a, Randomisable m Bool)

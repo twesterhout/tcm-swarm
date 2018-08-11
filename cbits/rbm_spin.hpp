@@ -79,14 +79,13 @@ constexpr auto alignment() noexcept -> std::size_t
 {
     // Intel MKL suggests to use buffers aligned to at least 64 bytes for
     // optimal performance.
-    return std::max<std::size_t>(
-        Vc::memory_alignment_v<Vc::simd<T, Abi>>, 64u);
+    return std::max<std::size_t>(Vc::memory_alignment_v<Vc::simd<T, Abi>>, 64u);
 }
 
 } // namespace detail
 
 #if !defined(TCM_SWARM_NOCHECK_ALIGNMENT)
-#define TCM_SWARM_IS_ALIGNED(pointer, alignment)                          \
+#define TCM_SWARM_IS_ALIGNED(pointer, alignment)                               \
     (reinterpret_cast<std::intptr_t>(pointer) % alignment == 0)
 #else
 #define TCM_SWARM_IS_ALIGNED(pointer, alignment) true
@@ -118,7 +117,7 @@ class RbmBase<std::complex<R>, Allocator,
     std::enable_if_t<std::is_floating_point_v<R>>> {
 
   private:
-    using self_type = RbmBase<std::complex<R>, Allocator>;
+    using self_type = RbmBase; // <std::complex<R>, Allocator>;
     using C = std::complex<R>;
 
   public:
@@ -148,28 +147,20 @@ class RbmBase<std::complex<R>, Allocator,
     ///
     /// \endrst
     RbmBase(index_type const size_visible, index_type const size_hidden)
+        : _weights{}, _visible{}, _hidden{}
     {
-        if (size_visible < 0) {
-            throw_with_trace(std::invalid_argument{
-                "Number of visible units is negative ("
-                + std::to_string(size_visible) + ")."});
-        }
-        if (size_hidden < 0) {
-            throw_with_trace(std::invalid_argument{
-                "Number of visible units is negative ("
-                + std::to_string(size_visible) + ")."});
-        }
-
-        auto const n = gsl::narrow<size_type>(size_visible);
-        auto const m = gsl::narrow<size_type>(size_hidden);
+        if (size_visible < 0)
+            throw_with_trace(negative_size{"size_visible", size_visible});
+        if (size_hidden < 0)
+            throw_with_trace(negative_size{"size_hidden", size_hidden});
+        auto const n = gsl::narrow_cast<size_type>(size_visible);
+        auto const m = gsl::narrow_cast<size_type>(size_hidden);
         _weights.resize(n * m);
         _visible.resize(n);
         _hidden.resize(m);
 
-        Ensures(
-            TCM_SWARM_IS_ALIGNED(_weights.data(), detail::alignment<R>()));
-        Ensures(
-            TCM_SWARM_IS_ALIGNED(_visible.data(), detail::alignment<R>()));
+        Ensures(TCM_SWARM_IS_ALIGNED(_weights.data(), detail::alignment<R>()));
+        Ensures(TCM_SWARM_IS_ALIGNED(_visible.data(), detail::alignment<R>()));
         Ensures(TCM_SWARM_IS_ALIGNED(_hidden.data(), detail::alignment<R>()));
     }
 
@@ -182,7 +173,6 @@ class RbmBase<std::complex<R>, Allocator,
     RbmBase& operator=(RbmBase&&) noexcept = default;
 
     /// \}
-
 
     /// \brief Returns memory layout (column-major or row-major) of the weight matrix.
     static constexpr auto layout_weights() noexcept
@@ -245,16 +235,13 @@ class RbmBase<std::complex<R>, Allocator,
     /// \{
 
     /// \brief Returns the weights matrix as flattened array.
-    constexpr auto weights() const& noexcept -> gsl::span<C const>
+    constexpr auto weights() const & noexcept -> gsl::span<C const>
     {
         return {_weights};
     }
 
     /// \overload
-    constexpr auto weights() & noexcept -> gsl::span<C>
-    {
-        return {_weights};
-    }
+    constexpr auto weights() & noexcept -> gsl::span<C> { return {_weights}; }
 
     /// \brief Returns \f$w_{rc}\f$.
     constexpr auto weights(index_type const r, index_type const c) const
@@ -269,17 +256,18 @@ class RbmBase<std::complex<R>, Allocator,
     template <class Abi = Vc::simd_abi::native<R>>
     constexpr auto weights_v(index_type const r, index_type const c,
         Vc::flags::element_aligned_tag flag) const
-        noexcept(!detail::gsl_can_throw()) -> Vc::simd<R, Abi>
+        noexcept(!detail::gsl_can_throw()) -> std::complex<Vc::simd<R, Abi>>
     {
         using V                    = Vc::simd<R, Abi>;
         constexpr auto vector_size = static_cast<index_type>(V::size());
         static_assert(vector_size % 2 == 0);
         static_assert(layout_weights() == mkl::Layout::ColMajor);
-        Expects(0 <= r && r + vector_size / 2 <= size_hidden());
+        Expects(0 <= r && r + vector_size <= size_hidden());
         Expects(0 <= c && c < size_visible());
         auto const* p = _weights.data() + r + ldim_weights() * c;
+        return copy_from<Abi>(p, flag);
         // Expects(TCM_SWARM_IS_ALIGNED(p, Vc::memory_alignment_v<V>));
-        return {reinterpret_cast<R const*>(p), flag};
+        // return {reinterpret_cast<R const*>(p), flag};
     }
 
     /// \brief Returns visible bias.
@@ -328,15 +316,16 @@ class RbmBase<std::complex<R>, Allocator,
     template <class Abi = Vc::simd_abi::native<R>>
     constexpr auto visible_v(
         index_type const i, Vc::flags::vector_aligned_tag flag) const
-        noexcept(!detail::gsl_can_throw()) -> Vc::simd<R, Abi>
+        noexcept(!detail::gsl_can_throw()) // -> Vc::simd<R, Abi>
     {
         using V                    = Vc::simd<R, Abi>;
         constexpr auto vector_size = static_cast<index_type>(V::size());
         static_assert(vector_size % 2 == 0);
-        Expects((i + vector_size / 2 < size_visible()));
+        Expects((i + vector_size < size_visible()));
         auto const* p = _visible.data() + i;
         Expects(TCM_SWARM_IS_ALIGNED(p, Vc::memory_alignment_v<V>));
-        return {reinterpret_cast<R const*>(p), flag};
+        return copy_from<Abi>(p, flag);
+        // return {reinterpret_cast<R const*>(p), flag};
     }
 
     /// \brief Returns hidden bias.
@@ -376,15 +365,16 @@ class RbmBase<std::complex<R>, Allocator,
     template <class Abi = Vc::simd_abi::native<R>>
     constexpr auto hidden_v(
         index_type const i, Vc::flags::vector_aligned_tag flag) const
-        noexcept(!detail::gsl_can_throw()) -> Vc::simd<R, Abi>
+        noexcept(!detail::gsl_can_throw()) // -> Vc::simd<R, Abi>
     {
         using V                    = Vc::simd<R, Abi>;
         constexpr auto vector_size = static_cast<index_type>(V::size());
         static_assert(vector_size % 2 == 0);
-        Expects((i + vector_size / 2 < size_hidden()));
+        Expects((i + vector_size < size_hidden()));
         auto const* p = _hidden.data() + i;
         Expects(TCM_SWARM_IS_ALIGNED(p, Vc::memory_alignment_v<V>));
-        return {reinterpret_cast<R const*>(p), flag};
+        return copy_from<Abi>(p, flag);
+        // return {reinterpret_cast<R const*>(p), flag};
     }
 
     /// \}
@@ -480,6 +470,11 @@ class RbmBase<std::complex<R>, Allocator,
                 spin.size() + theta.size(), spin.size() * theta.size()),
             layout_weights());
         mkl::scale(R{0.5}, out);
+        for (auto z: out) {
+            if (std::abs(z) > R{10}) {
+                std::cout << "Component is quite big: " << z << '\n';
+            }
+        }
     }
 };
 
@@ -561,6 +556,8 @@ struct McmcBase<std::complex<R>, Allocator,
         return _rbm->size_weights();
     }
 
+    constexpr auto size() const noexcept { return _rbm->size(); }
+
     constexpr auto theta() const& noexcept -> gsl::span<C const>
     {
         return {_theta};
@@ -571,7 +568,7 @@ struct McmcBase<std::complex<R>, Allocator,
     template <class Abi = Vc::simd_abi::native<R>>
     constexpr auto theta_v(index_type const i,
         Vc::flags::vector_aligned_tag flag) const
-        -> Vc::simd<R, Abi>
+        // -> Vc::simd<R, Abi>
     {
         using V                    = Vc::simd<R, Abi>;
         constexpr auto vector_size = static_cast<index_type>(V::size());
@@ -579,7 +576,8 @@ struct McmcBase<std::complex<R>, Allocator,
         Expects((i + vector_size / 2 <= size_hidden()));
         auto const* p = _theta.data() + i;
         Expects(TCM_SWARM_IS_ALIGNED(p, Vc::memory_alignment_v<V>));
-        return {reinterpret_cast<R const*>(p), flag};
+        return copy_from<Abi>(p, flag);
+        // return {reinterpret_cast<R const*>(p), flag};
     }
 
     constexpr auto spin() const& noexcept -> gsl::span<C const>
@@ -660,16 +658,17 @@ struct McmcBase<std::complex<R>, Allocator,
     auto new_theta_v(index_type const     i,
         gsl::span<index_type const> const flips,
         Vc::flags::vector_aligned_tag     flag) const
-        noexcept(!detail::gsl_can_throw()) -> Vc::simd<R, Abi>
+        noexcept(!detail::gsl_can_throw()) -> std::complex<Vc::simd<R, Abi>>
     {
+        using V = Vc::simd<R, Abi>;
         Expects(flips_are_within_bounds(flips));
         Expects(flips_are_unique(flips));
-        Vc::simd<R, Abi> delta = 0;
+        std::complex<V> delta{V{0}, V{0}};
         for (auto const flip : flips) {
             delta += _rbm->weights_v(i, flip, Vc::flags::element_aligned)
-                     * _spin[flip].real();
+                     * V{_spin[flip].real()};
         }
-        return theta_v(i, flag) - R{2} * delta;
+        return theta_v(i, flag) - V{2} * delta;
     }
 
     TCM_SWARM_ARTIFIFICAL
@@ -693,11 +692,16 @@ struct McmcBase<std::complex<R>, Allocator,
         using V                    = Vc::simd<R, Abi>;
         constexpr auto vector_size = static_cast<index_type>(V::size());
         auto           rest        = size_hidden() % vector_size;
+#if 0
         V              sum_real    = 0;
         V              sum_imag    = 0;
+#else
+        std::complex<V> sum{V{0}, V{0}};
+#endif
         C              sum_rest    = 0;
         for (index_type i = 0; i <= size_hidden() - vector_size;
              i += vector_size) {
+#if 0
             auto [a, b] = _deinterleave(
                 new_theta_v(i, flips, Vc::flags::vector_aligned),
                 new_theta_v(i + vector_size / 2, flips,
@@ -705,12 +709,20 @@ struct McmcBase<std::complex<R>, Allocator,
             std::tie(a, b) = _log_cosh(a, b);
             sum_real += a;
             sum_imag += b;
+#else
+            sum += _log_cosh(new_theta_v(i, flips, Vc::flags::vector_aligned));
+#endif
         }
         for (index_type i = size_hidden() - rest; i < size_hidden(); ++i) {
             sum_rest += _log_cosh(new_theta(i, flips));
         }
+#if 0
         return std::complex{Vc::reduce(sum_real), Vc::reduce(sum_imag)}
                + sum_rest;
+#else
+        return std::complex{Vc::reduce(sum.real()), Vc::reduce(sum.imag())}
+               + sum_rest;
+#endif
     }
 
   private:
@@ -798,12 +810,12 @@ struct McmcBase<std::complex<R>, Allocator,
     {
         using V                    = Vc::simd<R, Abi>;
         constexpr auto vector_size = static_cast<index_type>(V::size());
-        auto           rest        = size_hidden() % (vector_size / 2);
-        auto*          data        = reinterpret_cast<R*>(_theta.data());
+        auto           rest        = size_hidden() % vector_size;
+        auto*          data        = _theta.data();
         for (index_type i = 0; i < size_hidden() - rest;
-             i += vector_size / 2, data += vector_size) {
-            new_theta_v(i, flips, Vc::flags::vector_aligned)
-                .copy_to(data, Vc::flags::vector_aligned);
+             i += vector_size, data += vector_size) {
+            copy_to(new_theta_v(i, flips, Vc::flags::vector_aligned),
+                data, Vc::flags::vector_aligned);
         }
         for (index_type i = size_hidden() - rest; i < size_hidden(); ++i) {
             _theta[i] = new_theta(i, flips);
@@ -853,6 +865,19 @@ struct McmcBase<std::complex<R>, Allocator,
         _log_psi           = _rbm->log_wf(_spin, _sum_logcosh_theta);
     }
 
+    template <std::ptrdiff_t Extent>
+    auto der_log_wf(gsl::multi_span<C, Extent> const out) const
+        noexcept(!detail::gsl_can_throw())
+    {
+        der_log_wf(gsl::span<C, Extent>{out.data(), out.size()});
+    }
+
+    template <std::ptrdiff_t Extent>
+    auto der_log_wf(gsl::span<C, Extent> const out) const
+        noexcept(!detail::gsl_can_throw())
+    {
+        _rbm->der_log_wf(spin(), theta(), out);
+    }
 };
 
 

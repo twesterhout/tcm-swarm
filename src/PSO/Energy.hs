@@ -20,7 +20,8 @@ module PSO.Energy
   , writeVariances2TSV
   ) where
 
-import Control.Lens
+import Lens.Micro
+import Lens.Micro.Extras
 import Data.Monoid
 import Data.List(intersperse)
 import qualified Data.List as List

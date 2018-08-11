@@ -1,17 +1,30 @@
-flags:
-  mersenne-random:
-    use_sse2: true
+flags: {}
 extra-package-dbs: []
-packages:
-  - .
-extra-deps:
-  - mersenne-random-1.0.0.1
-  - algebra-4.3
-  - derive-storable-0.1.1.1
-resolver: lts-9.18
-
 build:
   haddock-arguments:
     haddock-args:
-      - "--html-location='http://hackage.haskell.org/packages/archive/$pkg/latest/doc/html'"
+      - --html-location='http://hackage.haskell.org/packages/archive/$pkg/latest/doc/html'
   haddock-deps: false
+  library-profiling: true
+  executable-profiling: true
+packages:
+  - .
+extra-deps:
+  - derive-storable-0.1.1.1
+  - mersenne-random-1.0.0.1
+  - statistics-0.14.0.2
+  - git: git@github.com:wellposed/hblas.git
+    commit: "d6d582a"
+
+  # - criterion # -1.2.6.0
+  # - deepseq # -1.4.3.0
+  # - derive-storable # -0.1.1.1
+  # - mersenne-random # -1.0.0.1
+  # - statistics # -0.14.0.2
+resolver: lts-10.5
+extra-include-dirs:
+  - external/intel/mkl/include
+  - cbits
+extra-lib-dirs:
+  - /home/tom/src/tcm-swarm/external/intel/mkl/lib/intel64
+  - /home/tom/src/tcm-swarm

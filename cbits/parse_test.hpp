@@ -91,12 +91,21 @@ auto operator>>(std::basic_istream<CharT, Traits>& is, PyComplex<T>& x)
         is.exceptions(std::ios_base::failbit);
         T a, b;
         std::ws(is);
-        expects(is, CharT{'('});
-        is >> a >> b;
-        expects(is, CharT{'j'});
-        std::ws(is);
-        expects(is, CharT{')'});
-        x.unpack = {a, b};
+        if (is.peek() != CharT{'('}) {
+            // We have a purely imaginary number
+            a = 0;
+            is >> b;
+            expects(is, CharT{'j'});
+            x.unpack = {a, b};
+        }
+        else {
+            expects(is, CharT{'('});
+            is >> a >> b;
+            expects(is, CharT{'j'});
+            std::ws(is);
+            expects(is, CharT{')'});
+            x.unpack = {a, b};
+        }
     }
     catch (std::ios_base::failure const& e) {
         is.exceptions(io_state);
@@ -386,7 +395,38 @@ auto parse_der_log_wf_input(
     }
     catch (std::ios_base::failure const& e) {
         is.exceptions(io_state);
-        throw parse_error{"Failed to parse spin - log_wf combinations."};
+        throw parse_error{"Failed to parse spin - der_log_wf combinations."};
+    }
+    return expected;
+}
+
+template <class Rbm, class CharT, class Traits>
+auto parse_force_input(
+    std::basic_istream<CharT, Traits>& is, Rbm const& rbm)
+{
+    using vector_type   = typename Rbm::vector_type;
+    using index_type    = typename Rbm::index_type;
+    using C             = typename Rbm::value_type;
+    using R             = decltype(std::declval<C>().real());
+    auto const io_state = is.exceptions();
+    std::vector<std::tuple<index_type, C, vector_type>> expected;
+    try {
+        is.exceptions(std::ios_base::failbit);
+        while (!is.eof()) {
+            index_type   magnetisation;
+            PyComplex<R> py_energy;
+            vector_type  force(rbm.size());
+            auto         py_force = to_list(gsl::make_span(force));
+            is >> magnetisation >> py_energy >> py_force;
+            expected.emplace_back(
+                magnetisation, py_energy.unpack, std::move(force));
+            std::ws(is);
+        }
+    }
+    catch (std::ios_base::failure const& e) {
+        is.exceptions(io_state);
+        throw parse_error{
+            "Failed to parse magnetisation - energy - force combinations."};
     }
     return expected;
 }

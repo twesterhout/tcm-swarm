@@ -56,8 +56,8 @@ __m128  __svml_fmodf4(__m128, __m128);
 __m128d __svml_fmod2(__m128d, __m128d);
 __m128  __svml_logf4(__m128);
 __m128d __svml_log2(__m128d);
-__m128  __svml_clogf4(__m128);
-__m128d __svml_clog2(__m128d);
+__m128  __svml_clogf2(__m128);
+__m128d __svml_clog1(__m128d);
 __m128  __svml_log1pf4(__m128);
 __m128d __svml_log1p2(__m128d);
 __m128  __svml_expf4(__m128);
@@ -81,8 +81,8 @@ __m256  __svml_fmodf8(__m256, __m256);
 __m256d __svml_fmod4(__m256d, __m256d);
 __m256  __svml_logf8(__m256);
 __m256d __svml_log4(__m256d);
-__m256  __svml_clogf8(__m256);
-__m256d __svml_clog4(__m256d);
+__m256  __svml_clogf4(__m256);
+__m256d __svml_clog2(__m256d);
 __m256  __svml_log1pf8(__m256);
 __m256d __svml_log1p4(__m256d);
 __m256  __svml_expf8(__m256);
@@ -406,22 +406,27 @@ auto _atan2(Vc::simd<T, Abi> const x, Vc::simd<T, Abi> const y)
 
 namespace detail {
 namespace {
-#define CLOG_FN(s, vector_type, element_type, abi)                        \
-    auto _clog(Vc::simd<element_type, abi> const x) noexcept              \
-        ->Vc::simd<element_type, abi>                                     \
-    {                                                                     \
-        return static_cast<Vc::simd<element_type, abi>>(                  \
-            __svml_clog##s(static_cast<vector_type>(x)));                 \
+    // MAKE_FN_SSE_FLOAT(CLOG_FN)
+    // MAKE_FN_SSE_DOUBLE(CLOG_FN)
+
+    auto _clog(Vc::simd<float, Vc::simd_abi::sse> const x) noexcept
+        -> Vc::simd<float, Vc::simd_abi::sse>
+    {
+        return static_cast<Vc::simd<float, Vc::simd_abi::sse>>(
+            __svml_clogf2(static_cast<__m128>(x)));
     }
 
-    MAKE_FN_SSE_FLOAT(CLOG_FN)
-    MAKE_FN_SSE_DOUBLE(CLOG_FN)
-    // MAKE_FN_AVX_FLOAT(CLOG_FN)
+    auto _clog(Vc::simd<float, Vc::simd_abi::avx> const x) noexcept
+        -> Vc::simd<float, Vc::simd_abi::avx>
+    {
+        return static_cast<Vc::simd<float, Vc::simd_abi::avx>>(
+            __svml_clogf4(static_cast<__m256>(x)));
+    }
+
     // MAKE_FN_AVX_DOUBLE(CLOG_FN)
     // MAKE_FN_AVX512_FLOAT(CLOG_FN)
     // MAKE_FN_AVX512_DOUBLE(CLOG_FN)
 
-#undef CLOG_FN
 } // namespace
 } // namespace detail
 
@@ -545,6 +550,86 @@ TCM_SWARM_FORCEINLINE auto _to_min_pi_pi(
 #endif
 }
 
+namespace detail {
+template <class Flags>
+TCM_SWARM_FORCEINLINE auto copy_from(std::complex<float> const* p, Flags flags,
+    Vc::simd_abi::sse /*unused*/) noexcept
+    -> std::complex<Vc::simd<float, Vc::simd_abi::sse>>
+{
+    static_assert(std::is_empty_v<Vc::simd_abi::sse>, "");
+    using V          = Vc::simd<float, Vc::simd_abi::sse>;
+    auto const* data = reinterpret_cast<float const*>(p);
+    V const     x{data, flags};
+    V const     y{data + V::size(), flags};
+    auto const  real = static_cast<V>(_mm_shuffle_ps(static_cast<__m128>(x),
+        static_cast<__m128>(y), _MM_SHUFFLE(2, 0, 2, 0)));
+    auto const  imag = static_cast<V>(_mm_shuffle_ps(static_cast<__m128>(x),
+        static_cast<__m128>(y), _MM_SHUFFLE(3, 1, 3, 1)));
+    return {real, imag};
+}
+
+template <class Flags>
+TCM_SWARM_FORCEINLINE auto copy_from(std::complex<float> const* p, Flags flags,
+    Vc::simd_abi::avx /*unused*/) noexcept
+    -> std::complex<Vc::simd<float, Vc::simd_abi::avx>>
+{
+    static_assert(std::is_empty_v<Vc::simd_abi::avx>, "");
+    using V          = Vc::simd<float, Vc::simd_abi::avx>;
+    auto const* data = reinterpret_cast<float const*>(p);
+    V const     x{data, flags};
+    V const     y{data + V::size(), flags};
+    auto const  real = static_cast<V>(_mm256_shuffle_ps(static_cast<__m256>(x),
+        static_cast<__m256>(y), _MM_SHUFFLE(2, 0, 2, 0)));
+    auto const  imag = static_cast<V>(_mm256_shuffle_ps(static_cast<__m256>(x),
+        static_cast<__m256>(y), _MM_SHUFFLE(3, 1, 3, 1)));
+    return {real, imag};
+}
+
+template <class Flags>
+TCM_SWARM_FORCEINLINE auto copy_to(
+    std::complex<Vc::simd<float, Vc::simd_abi::sse>> const z,
+    std::complex<float>* p, Flags flags) noexcept -> void
+{
+    using V         = Vc::simd<float, Vc::simd_abi::sse>;
+    auto*      data = reinterpret_cast<float*>(p);
+    auto const a    = static_cast<V>(_mm_unpacklo_ps(
+        static_cast<__m128>(z.real()), static_cast<__m128>(z.imag())));
+    auto const b    = static_cast<V>(_mm_unpackhi_ps(
+        static_cast<__m128>(z.real()), static_cast<__m128>(z.imag())));
+    a.copy_to(data, flags);
+    b.copy_to(data + V::size(), flags);
+}
+
+template <class Flags>
+TCM_SWARM_FORCEINLINE auto copy_to(
+    std::complex<Vc::simd<float, Vc::simd_abi::avx>> const z,
+    std::complex<float>* p, Flags flags) noexcept -> void
+{
+    using V         = Vc::simd<float, Vc::simd_abi::avx>;
+    auto*      data = reinterpret_cast<float*>(p);
+    auto const a    = static_cast<V>(_mm256_unpacklo_ps(
+        static_cast<__m256>(z.real()), static_cast<__m256>(z.imag())));
+    auto const b    = static_cast<V>(_mm256_unpackhi_ps(
+        static_cast<__m256>(z.real()), static_cast<__m256>(z.imag())));
+    a.copy_to(data, flags);
+    b.copy_to(data + V::size(), flags);
+}
+} // namespace detail
+
+template <class Abi, class T, class Flags>
+TCM_SWARM_FORCEINLINE auto copy_from(std::complex<T> const* p,
+    Flags flags) noexcept -> std::complex<Vc::simd<T, Abi>>
+{
+    return detail::copy_from(p, flags, Abi{});
+}
+
+template <class Abi, class T, class Flags>
+TCM_SWARM_FORCEINLINE auto copy_to(std::complex<Vc::simd<T, Abi>> const z,
+    std::complex<T>* p, Flags flags) noexcept -> void
+{
+    detail::copy_to(z, p, flags);
+}
+
 TCM_SWARM_FORCEINLINE
 TCM_SWARM_CONST
 auto _interleave(Vc::simd<float, Vc::simd_abi::sse> const x,
@@ -621,7 +706,9 @@ TCM_SWARM_FORCEINLINE auto _clog(Vc::simd<T, Vc::simd_abi::avx> const x,
     -> std::tuple<Vc::simd<T, Vc::simd_abi::avx>,
         Vc::simd<T, Vc::simd_abi::avx>>
 {
-    return {T{0.5} * _log(x * x + y * y), _atan2(y, x)};
+    auto [a, b] = _interleave(x, y);
+    return _deinterleave(_clog(a), _clog(b));
+    // return {T{0.5} * _log(x * x + y * y), _atan2(y, x)};
 }
 
 
@@ -631,7 +718,8 @@ TCM_SWARM_FORCEINLINE auto _log_cosh(
     -> std::tuple<Vc::simd<T, Abi>, Vc::simd<T, Abi>>
 {
     constexpr auto cutoff = T{20.0};
-    static auto const log_of_2  = Vc::simd<T, Abi>{std::log(T{2})};
+    static auto const log_of_2 = Vc::simd<T, Abi>{
+        T{0.69314718055994530941723212145817656807550013436025525412068}};
 
     auto const smaller_than_zero = x < T{0};
     Vc::where(smaller_than_zero, x) *= T{-1};
@@ -649,31 +737,27 @@ TCM_SWARM_FORCEINLINE auto _log_cosh(
     }
 }
 
-template <class T, class Abi = Vc::simd_abi::native<T>>
+template <class T, class Abi>
+auto _log_cosh(std::complex<Vc::simd<T, Abi>> const z) noexcept(
+    !detail::gsl_can_throw()) -> std::complex<Vc::simd<T, Abi>>
+{
+    auto const [x, y] = _log_cosh(z.real(), z.imag());
+    return {x, y};
+}
+
+template <class T, class Abi = Vc::simd_abi::native<T>,
+    class = std::enable_if_t<std::is_floating_point_v<T>>>
 auto _log_cosh(std::complex<T> const z) noexcept(!detail::gsl_can_throw())
     -> std::complex<T>
 {
-    constexpr auto vector_size = Vc::simd<T, Abi>::size();
-    T x_data[vector_size] = {0};
-    T y_data[vector_size] = {0};
-    Expects(std::all_of(std::begin(x_data), std::end(x_data),
-        [](auto const x) { return x == T{0}; }));
-    Expects(std::all_of(std::begin(y_data), std::end(y_data),
-        [](auto const x) { return x == T{0}; }));
-    x_data[0] = z.real();
-    y_data[0] = z.imag();
-    auto const [a, b] =
-        _log_cosh(Vc::simd<T, Abi>{x_data, Vc::flags::element_aligned},
-            Vc::simd<T, Abi>{y_data, Vc::flags::element_aligned});
-    a.copy_to(x_data, Vc::flags::element_aligned);
-    b.copy_to(y_data, Vc::flags::element_aligned);
-    auto const x = x_data[0];
-    auto const y = y_data[0];
-    if (std::abs(z.real()) < T{10.0}) {
-        Expects(std::abs(x - std::log(std::cosh(z)).real()) < T{1.0E-3});
-        Expects(std::abs(y - std::log(std::cosh(z)).imag()) < T{1.0E-3});
-    }
-    return {x, y};
+    using V = Vc::simd<T, Abi>;
+    constexpr auto vector_size = V::size();
+    V x{0}, y{0};
+    x[0] = z.real();
+    y[0] = z.imag();
+    // auto const [a, b] = _log_cosh(x, y);
+    std::tie(x, y) = _log_cosh(x, y);
+    return {x[0], y[0]};
 }
 
 /*

@@ -61,7 +61,7 @@
 
 #define TCM_SWARM_PURE __attribute__((__pure__))
 
-#define TCM_SWARM_ARTIFIFICAL __attribute__((__artificial__))
+#define TCM_SWARM_ARTIFIFICAL
 
 #define TCM_SWARM_LIKELY(cond) __builtin_expect(!!(cond), 1)
 
@@ -171,7 +171,7 @@ namespace detail {
 #if defined(GSL_THROW_ON_CONTRACT_VIOLATION)
         return true;
 #elif defined(GSL_TERMINATE_ON_CONTRACT_VIOLATION)                        \
-    || defined(GSL_TERMINATE_ON_CONTRACT_VIOLATION)
+    || defined(GSL_UNENFORCED_ON_CONTRACT_VIOLATION)
         return false;
 #else
 #error "BUG! This function assumes that <gsl/gsl_assert> is included!"

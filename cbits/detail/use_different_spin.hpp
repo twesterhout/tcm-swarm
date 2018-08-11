@@ -29,46 +29,39 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef TCM_SWARM_FORCE_HPP
-#define TCM_SWARM_FORCE_HPP
+#ifndef TCM_SWARM_DETAIL_USE_DIFFERENT_SPIN_HPP
+#define TCM_SWARM_DETAIL_USE_DIFFERENT_SPIN_HPP
 
-#include "detail/axpy.hpp"
-#include "detail/config.hpp"
-#include "detail/gemv.hpp"
+#include "config.hpp"
 
-#include <algorithm>
-#include <numeric>
-
-#include <gsl/multi_span>
-#include <gsl/span>
+#include <stdexcept>
+#include <vector>
 
 TCM_SWARM_BEGIN_NAMESPACE
 
-template <class C, std::ptrdiff_t Steps, std::ptrdiff_t Parameters>
-auto force(gsl::span<C const, Steps> const energies, C const mean_energy,
-    gsl::multi_span<C const, Steps, Parameters> const derivatives,
-    gsl::span<C, Parameters> const out, gsl::span<C, Steps> const workspace)
-        noexcept(!detail::gsl_can_throw())
-{
-    auto const number_steps = energies.size();
-    auto const number_parameters = derivatives.template extent<1>();
-    Expects(derivatives.template extent<0>() == number_steps);
-    Expects(out.size() == number_parameters);
-    Expects(workspace.size() == number_steps);
-    Expects(number_steps > 0 && number_parameters > 0);
+template <class VectorType>
+struct use_different_spin : std::exception {
 
-    using R = typename C::value_type;
-    // workspace <- E - 〈E〉
-    std::fill(begin(workspace), end(workspace), -mean_energy);
-    mkl::axpy(C{1}, energies, workspace);
+  private:
+    VectorType _spin;
 
-    // out <- 1/number_steps * O^H (E - 〈E〉)
-    mkl::gemv(mkl::Layout::RowMajor, mkl::Transpose::ConjTrans,
-        C{1} / gsl::narrow<R>(energies.size()), derivatives,
-        gsl::span<C const, Steps>{workspace}, C{0}, out);
-}
+  public:
+    use_different_spin(VectorType spin) noexcept
+        : _spin(std::move(spin))
+    {
+    }
+
+    virtual auto what() const noexcept -> char const* override final
+    {
+        return "This spin configuration is worth nothing, "
+               "try starting with a different one.";
+    }
+
+    auto const& get_spin() const& noexcept { return _spin; }
+    auto&       get_spin() & noexcept { return _spin; }
+    auto&&      get_spin() && noexcept { return std::move(_spin); }
+};
 
 TCM_SWARM_END_NAMESPACE
 
-#endif // TCM_SWARM_FORCE_HPP
-
+#endif // TCM_SWARM_DETAIL_USE_DIFFERENT_SPIN_HPP

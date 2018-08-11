@@ -46,8 +46,24 @@ template <class E>
 [[noreturn]] auto throw_with_trace(E&& e)
 {
     throw boost::enable_error_info(std::forward<E>(e))
-        << traced(boost::stacktrace::stacktrace());
+                           << traced(boost::stacktrace::stacktrace());
 }
+
+template <class Int>
+class negative_size
+    : public virtual boost::exception
+    , public virtual std::invalid_argument {
+
+    static_assert(std::is_integral_v<Int>);
+    Int x;
+
+  public:
+    negative_size(char const* name, Int const value) noexcept(
+        std::is_nothrow_default_constructible_v<boost::exception>)
+        : boost::exception{}, std::invalid_argument{name}, x{value}
+    {
+    }
+};
 
 TCM_SWARM_END_NAMESPACE
 

@@ -34,6 +34,11 @@ namespace mkl {
         ConjTrans = CblasConjTrans
     };
 
+    enum class UpLo : std::underlying_type_t<CBLAS_UPLO> {
+        Upper = CblasUpper,
+        Lower = CblasLower
+    };
+
     TCM_SWARM_FORCEINLINE
     constexpr auto to_raw_enum(Layout const x) noexcept
         -> CBLAS_LAYOUT
@@ -46,6 +51,12 @@ namespace mkl {
         -> CBLAS_TRANSPOSE
     {
         return static_cast<CBLAS_TRANSPOSE>(x);
+    }
+
+    TCM_SWARM_FORCEINLINE
+    constexpr auto to_raw_enum(UpLo const x) noexcept -> CBLAS_UPLO
+    {
+        return static_cast<CBLAS_UPLO>(x);
     }
 
     template <class T, class = void>
