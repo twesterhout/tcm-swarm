@@ -13,6 +13,15 @@
 [submodule "external/range-v3"]
 	path = external/range-v3
 	url = https://github.com/ericniebler/range-v3
-[submodule "external/boost"]
-	path = external/boost
-	url = https://github.com/boostorg/boost
+# [submodule "external/boost"]
+# 	path = external/boost
+# 	url = https://github.com/boostorg/boost
+[submodule "external/expected"]
+	path = external/expected
+	url = https://github.com/TartanLlama/expected
+[submodule "external/spdlog"]
+	path = external/spdlog
+	url = https://github.com/gabime/spdlog
+[submodule "external/fmt"]
+	path = external/fmt
+	url = https://github.com/fmtlib/fmt
