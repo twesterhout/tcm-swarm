@@ -1,434 +1,354 @@
-
-#include <cstdio>
-#include <memory>
+// Copyright Tom Westerhout (c) 2018
+//
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//     * Redistributions in binary form must reproduce the above
+//       copyright notice, this list of conditions and the following
+//       disclaimer in the documentation and/or other materials provided
+//       with the distribution.
+//
+//     * Neither the name of Tom Westerhout nor the names of other
+//       contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "nqs.h"
-#include "rbm_spin.hpp"
+#include "detail/config.hpp"
 #include "heisenberg.hpp"
 #include "monte_carlo.hpp"
+#include "rbm_spin_float.hpp"
+#include <cstdio>
+#include <complex.h>
+#include <memory>
 
-
-struct _tcm_cRbm : public tcm::RbmBase<std::complex<float>> {};
+static_assert(
+    std::is_same_v<tcm_Index, tcm::Rbm::index_type>, "Oh this is _not_ good!");
 
 namespace {
-
-#define DEFINE_TO_CXX_TYPE_FN(c_type, cxx_type)                                \
-    auto* to_cxx_type(c_type* x) noexcept                                      \
-    {                                                                          \
-        return reinterpret_cast<cxx_type*>(x);                                 \
-    }
-
-// clang-format off
-DEFINE_TO_CXX_TYPE_FN(tcm_cRbm, tcm::RbmBase<std::complex<float>>);
-DEFINE_TO_CXX_TYPE_FN(tcm_cRbm const, tcm::RbmBase<std::complex<float>> const);
-// clang-format on
-
-#undef DEFINE_TO_CXX_TYPE_FN
-
-template <class Rbm, class... Args>
-int _inplace_construc_rbm(Rbm* const p, Args&&... args) noexcept
+auto to_span(tcm_Vector& x) -> gsl::span<std::complex<float>>
 {
-    try {
-        new (p) Rbm(std::forward<Args>(args)...);
-        return 0;
+    if (x.size < 0) {
+        tcm::global_logger()->critical(
+            "Length can't be negative, but got {}.", x.size);
+        tcm::throw_with_trace(std::runtime_error{"Negative length."});
     }
-    catch (std::exception const& e) {
-        std::cerr << "[-] Error: " << e.what() << '\n';
-        auto const* st = boost::get_error_info<tcm::traced>(e);
-        if (st != nullptr) {
-            std::cerr << "Backtrace:\n" << *st << '\n';
-        }
-        std::cerr << std::flush;
-        std::exit(1);
-        TCM_SWARM_UNREACHABLE;
+    if (x.stride != 1) {
+        tcm::global_logger()->critical(
+            "Only a vector with stride 1 can be converted to gsl::span, "
+            "but got {}.",
+            x.stride);
+        tcm::throw_with_trace(std::runtime_error{"Invalid stride."});
     }
-    catch (...) {
-        std::cerr << "[-] PANIC! " << TCM_SWARM_CURRENT_FUNCTION
-                  << ": Unexpected exception!\n"
-                  << std::flush;
-        std::exit(1);
-        TCM_SWARM_UNREACHABLE;
-    }
+    return gsl::span{static_cast<std::complex<float>*>(x.data), x.size};
 }
 
-template <class Function, class... Args>
-decltype(auto) _should_not_throw(Function&& func, Args&&... args) noexcept
+[[noreturn]] auto not_implemented()
 {
-    try {
-        return std::invoke(
-            std::forward<Function>(func), std::forward<Args>(args)...);
+    tcm::global_logger()->critical(
+        "Unfortunately, the requested operation is not (yet) supported.",
+        TCM_SWARM_ISSUES_LINK);
+    tcm::throw_with_trace(std::runtime_error{"Not implemented."});
+}
+
+template <class... Ptrs>
+auto assert_not_null(char const* name, Ptrs*... pointers)
+{
+#if defined(TCM_SWARM_CLANG)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wparentheses-equality"
+#endif
+    if ((... || (pointers == nullptr))) {
+        tcm::global_logger()->critical(
+            "A nullptr was passed to {}. This is probably a bug. Please, "
+            "report it to {}. Terminating now...",
+            name, TCM_SWARM_ISSUES_LINK);
+        std::terminate();
     }
-    catch (std::exception const& e) {
-        std::cerr << "[-] Error: " << e.what() << '\n';
-        auto const* st = boost::get_error_info<tcm::traced>(e);
-        if (st != nullptr) {
-            std::cerr << "Backtrace:\n" << *st << '\n';
-        }
-        std::cerr << std::flush;
-        std::exit(1);
-        TCM_SWARM_UNREACHABLE;
-    }
+#if defined(TCM_SWARM_CLANG)
+#pragma clang diagnostic pop
+#endif
 }
 } // namespace
 
-extern "C"
-tcm_cRbm* tcm_cRbm_Create(int const size_visible, int const size_hidden)
+#define ASSERT_NOT_NULL(...) assert_not_null(__PRETTY_FUNCTION__, __VA_ARGS__)
+
+// =============================================================================
+
+extern "C" {
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Heisenberg_create(tcm_Hamiltonian* const hamiltonian,
+    tcm_Index (*edges)[2], tcm_Index const n, int const t1, int const t2,
+    float const* cutoff)
 {
-    return _should_not_throw(
-        [](auto const n, auto const m) {
-            return reinterpret_cast<tcm_cRbm*>(
-                std::make_unique<tcm::RbmBase<std::complex<float>>>(n, m)
-                    .release());
-        },
-        size_visible, size_hidden);
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(__PRETTY_FUNCTION__, hamiltonian, edges);
+        if (n < 0) {
+            tcm::global_logger()->critical(
+                "Length can't be negative. This is definitely a bug. Please, "
+                "report it to {}. Terminating now...",
+                TCM_SWARM_ISSUES_LINK);
+            std::terminate();
+        }
+        std::vector<std::array<tcm_Index, 2>> xs(gsl::narrow_cast<std::size_t>(n));
+        /*
+        for (tcm_Index i = 0; i < n; ++i) {
+            tcm::global_logger()->debug("Constructing HH: {}, {} <-> {}",
+                i, edges[i][0], edges[i][1]);
+            xs[i] = {edges[i][0], edges[i][1]};
+        }
+        */
+        std::memcpy(xs.data(), edges,
+            gsl::narrow_cast<std::size_t>(n) * sizeof(tcm_Index[2]));
+        hamiltonian->dtype = TCM_SPIN_HEISENBERG;
+        hamiltonian->payload =
+            cutoff == nullptr
+                ? std::make_unique<tcm::Heisenberg>(std::move(xs), std::array{t1, t2})
+                      .release()
+                : std::make_unique<tcm::Heisenberg>(
+                      std::move(xs), *cutoff, std::array{t1, t2})
+                      .release();
+    });
 }
 
-extern "C"
-void tcm_cRbm_Destroy(tcm_cRbm* const p)
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Heisenberg_destroy(tcm_Hamiltonian* const self)
 {
-    using Rbm = tcm::RbmBase<std::complex<float>>;
-    to_cxx_type(p)->~Rbm();
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(self);
+        if (self->dtype != TCM_SPIN_HEISENBERG) {
+            tcm::global_logger()->critical(
+                "Not a Heisenberg Hamiltonian was passed to "
+                "tcm_Heisenberg_destoy. This is definitely a bug. Please, "
+                "report the bug to {}. Terminating now.",
+                TCM_SWARM_ISSUES_LINK);
+            std::terminate();
+        }
+        ASSERT_NOT_NULL(self->payload);
+        reinterpret_cast<_tcm_Heisenberg*>(self->payload)->~_tcm_Heisenberg();
+    });
+}
+} // extern "C"
+
+// =============================================================================
+
+extern "C" {
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Rbm_create(tcm_Rbm* const rbm, tcm_Index const size_visible,
+    tcm_Index const size_hidden)
+{
+    static_assert(sizeof(tcm_Rbm) <= TCM_SWARM_SIZEOF_RBM);
+    static_assert(alignof(tcm_Rbm) <= TCM_SWARM_ALIGNOF_RBM);
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm);
+        ::new (rbm) _tcm_Rbm{size_visible, size_hidden};
+    });
 }
 
-extern "C"
-int tcm_cRbm_Size(tcm_cRbm const* const rbm)
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Rbm_destroy(tcm_Rbm* const rbm)
 {
-    return to_cxx_type(rbm)->size();
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm);
+        rbm->~_tcm_Rbm();
+    });
 }
 
-extern "C"
-int tcm_cRbm_Size_visible(tcm_cRbm const* const rbm)
+TCM_SWARM_SYMBOL_EXPORT
+tcm_Index tcm_Rbm_size(tcm_Rbm const* const rbm)
 {
-    return to_cxx_type(rbm)->size_visible();
+    return tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm);
+        return rbm->size();
+    });
 }
 
-extern "C"
-int tcm_cRbm_Size_hidden(tcm_cRbm const* const rbm)
+TCM_SWARM_SYMBOL_EXPORT
+tcm_Index tcm_Rbm_size_visible(tcm_Rbm const* const rbm)
 {
-    return to_cxx_type(rbm)->size_hidden();
+    return tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm);
+        return rbm->size_visible();
+    });
 }
 
-extern "C"
-void tcm_cRbm_Get_visible(tcm_cRbm* const rbm, tcm_cTensor1* const visible)
+TCM_SWARM_SYMBOL_EXPORT
+tcm_Index tcm_Rbm_size_hidden(tcm_Rbm const* const rbm)
 {
-    auto a           = to_cxx_type(rbm)->visible();
-    visible->data    = reinterpret_cast<tcm_Complex8*>(a.data());
-    visible->extents[0] = a.size();
-    // std::cout << "tcm_cRbm_Get_visible: " << a.size() << '\n';
+    return tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm);
+        return rbm->size_hidden();
+    });
 }
 
-extern "C"
-void tcm_cRbm_Get_hidden(tcm_cRbm* const rbm, tcm_cTensor1* const hidden)
+TCM_SWARM_SYMBOL_EXPORT
+tcm_Index tcm_Rbm_size_weights(tcm_Rbm const* const rbm)
 {
-    auto b          = to_cxx_type(rbm)->hidden();
-    hidden->data    = reinterpret_cast<tcm_Complex8*>(b.data());
-    hidden->extents[0] = b.size();
+    return tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm);
+        return rbm->size_weights();
+    });
 }
 
-extern "C"
-void tcm_cRbm_Get_weights(tcm_cRbm* const rbm, tcm_cTensor2* const weights)
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Rbm_get_visible(tcm_Rbm* const rbm, tcm_Vector* const visible)
 {
-    auto w           = to_cxx_type(rbm)->weights();
-    weights->data    = reinterpret_cast<tcm_Complex8*>(w.data());
-    weights->extents[0] = to_cxx_type(rbm)->size_visible();
-    weights->extents[1] = to_cxx_type(rbm)->size_hidden();
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm, visible);
+        *visible = rbm->visible();
+    });
 }
 
-void tcm_cRbm_Sample(
-    tcm_cRbm const* const rbm,
-    tcm_Hamiltonian const hamiltonian,
-    int const number_runs,
-    tcm_Range const* const steps,
-    int const* const magnetisation,
-    tcm_cEstimate* energy,
-    tcm_cTensor1* force,
-    tcm_cTensor2* derivatives)
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Rbm_get_hidden(tcm_Rbm* const rbm, tcm_Vector* const hidden)
 {
-    std::cerr << "Not implemented #3!\n" << std::flush;
-    std::exit(1);
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm, hidden);
+        *hidden = rbm->hidden();
+    });
 }
 
-
-extern "C"
-void tcm_cRbm_Sample_Moments(tcm_cRbm const* const rbm,
-    tcm_Hamiltonian const hamiltonian, int const number_runs,
-    tcm_Range const* const steps, int const* const magnetisation,
-    tcm_cTensor1* moments)
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_Rbm_get_weights(tcm_Rbm* const rbm, tcm_Matrix* const weights)
 {
-    auto const& state = *to_cxx_type(rbm);
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm, weights);
+        *weights = rbm->weights();
+    });
+}
+} // extern "C"
 
-    if (moments->extents[0] != 4) {
-        std::cerr << "Not implemented #1!\n" << std::flush;
-        std::exit(1);
+// =============================================================================
+
+namespace {
+auto to_metropolis_config(tcm_MC_Config const& config) -> tcm::MetropolisConfig
+{
+    tcm::MetropolisConfig conf;
+    conf.steps(tcm::Steps{config.range})
+        .threads({config.threads})
+        .runs(config.runs)
+        .flips(config.flips)
+        .restarts(config.restarts);
+    if (config.has_magnetisation) {
+        conf.magnetisation(config.magnetisation);
     }
+    tcm::global_logger()->debug(
+        "Configured Monte-Carlo:\n"
+        "* Steps: ({}, {}, {})\n"
+        "* Threads: ({}, {}, {})\n",
+        conf.steps().start(), conf.steps().stop(), conf.steps().step(),
+        conf.threads()[0], conf.threads()[1], conf.threads()[2]);
+    return conf;
+}
 
-    switch (hamiltonian) {
-    case HEISENBERG_1D_OPEN:
-        std::cerr << "Not implemented #2!\n" << std::flush;
-        std::exit(1);
-    case HEISENBERG_1D_PERIODIC: {
-        auto h = tcm::Heisenberg<float, 1, true>{5.0};
-        auto s = std::make_tuple(steps->start, steps->step, steps->stop);
-        auto m = magnetisation == nullptr ? std::nullopt
-                                          : std::optional{*magnetisation};
-        auto result = tcm::sample_moments<4>(
-            state, h, number_runs, std::move(s), 2, m, 5);
-        std::copy(std::begin(result), std::end(result),
-            reinterpret_cast<std::complex<float>*>(moments->data));
-    }
+constexpr auto no_variance_value() noexcept -> float { return -1.0f; }
+
+} // namespace
+
+extern "C" {
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_sample_moments(tcm_Rbm const* rbm, tcm_Hamiltonian const* hamiltonian,
+    tcm_MC_Config const* config, tcm_Vector* moments, tcm_MC_Stats* stats)
+{
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(rbm, hamiltonian, config, moments, stats);
+        switch (hamiltonian->dtype) {
+        case TCM_SPIN_HEISENBERG: {
+            auto const& h =
+                *reinterpret_cast<_tcm_Heisenberg const*>(hamiltonian->payload);
+            auto [dim, var] = tcm::sample_moments(*rbm, std::cref(h),
+                to_metropolis_config(*config), to_span(*moments));
+            Expects(!var.has_value() || var.value() >= 0);
+            stats->dimension = dim;
+            // TODO(twesterhout): This is such an ugly hack...
+            stats->variance = std::move(var).value_or(no_variance_value());
+            break;
+        }
+        case TCM_SPIN_ANISOTROPIC_HEISENBERG:
+        case TCM_SPIN_DZYALOSHINSKII_MORIYA: not_implemented();
+        } // end switch
+    });
+}
+
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_sample_gradients(tcm_Rbm const* rbm,
+    tcm_Hamiltonian const* hamiltonian, tcm_MC_Config const* config,
+    tcm_Vector* moments, tcm_Vector* force, tcm_Matrix* gradients,
+    tcm_MC_Stats* stats)
+{
+    tcm::should_not_throw([=]() {
+        ASSERT_NOT_NULL(
+            rbm, hamiltonian, config, moments, force, gradients, stats);
+        switch (hamiltonian->dtype) {
+        case TCM_SPIN_HEISENBERG: {
+            auto const& h =
+                *reinterpret_cast<_tcm_Heisenberg const*>(hamiltonian->payload);
+            tcm::Gradients<std::complex<float>> grads{*gradients};
+            auto [dim, var] = tcm::sample_gradients(*rbm, std::cref(h),
+                to_metropolis_config(*config), to_span(*moments),
+                to_span(*force), grads);
+            Expects(!var.has_value() || var.value() >= 0);
+            stats->dimension = dim;
+            // TODO(twesterhout): This is such an ugly hack...
+            stats->variance = std::move(var).value_or(no_variance_value());
+            break;
+        }
+        case TCM_SPIN_ANISOTROPIC_HEISENBERG:
+        case TCM_SPIN_DZYALOSHINSKII_MORIYA: not_implemented();
+        } // end switch
+    });
+}
+
+} // extern "C"
+
+// =============================================================================
+
+extern "C" {
+
+TCM_SWARM_SYMBOL_EXPORT
+void tcm_set_log_level(tcm_Level const level)
+{
+    switch (level) {
+    case tcm_Level_trace:
+        tcm::global_logger()->set_level(spdlog::level::trace);
+        break;
+    case tcm_Level_debug:
+        tcm::global_logger()->set_level(spdlog::level::debug);
+        break;
+    case tcm_Level_info:
+        tcm::global_logger()->set_level(spdlog::level::info);
+        break;
+    case tcm_Level_warn:
+        tcm::global_logger()->set_level(spdlog::level::warn);
+        break;
+    case tcm_Level_err:
+        tcm::global_logger()->set_level(spdlog::level::err);
+        break;
+    case tcm_Level_critical:
+        tcm::global_logger()->set_level(spdlog::level::critical);
+        break;
+    case tcm_Level_off:
+        tcm::global_logger()->set_level(spdlog::level::off);
+        break;
     } // end switch
 }
 
-/*
-extern "C" void tcm_cRBM_Set_visible(tcm_cRBM* const rbm,
-    tcm_Complex8 const* const visible, tcm_size_type const size)
-{
-    TRACE();
-    _should_not_throw(
-        [](auto& x, auto const* w, auto const n) {
-            x.unsafe_update_visible(gsl::span{w, n});
-        },
-        *to_cxx_type(rbm),
-        static_cast<std::complex<float> const*>(visible), size);
-}
+} // extern "C"
 
-extern "C" void tcm_cRBM_Set_hidden(tcm_cRBM* const rbm,
-    tcm_Complex8 const* const hidden, tcm_size_type const size)
-{
-    TRACE();
-    _should_not_throw(
-        [](auto& x, auto const* w, auto const n) {
-            x.unsafe_update_visible(gsl::span{w, n});
-        },
-        *to_cxx_type(rbm),
-        static_cast<std::complex<float> const*>(hidden), size);
-}
-
-extern "C" void tcm_cRBM_Plus(
-    tcm_cRBM const* const x, tcm_cRBM const* const y, tcm_cRBM* const out)
-{
-    _should_not_throw(
-        [](auto const& a, auto const& b, auto& c) { c = a + b; },
-        *to_cxx_type(x), *to_cxx_type(y), *to_cxx_type(out));
-}
-
-extern "C" void tcm_cRBM_Minus(
-    tcm_cRBM const* const x, tcm_cRBM const* const y, tcm_cRBM* const out)
-{
-    _should_not_throw(
-        [](auto const& a, auto const& b, auto& c) { c = a - b; },
-        *to_cxx_type(x), *to_cxx_type(y), *to_cxx_type(out));
-}
-
-extern "C" void tcm_cRBM_Multiply(
-    tcm_cRBM const* const x, tcm_cRBM const* const y, tcm_cRBM* const out)
-{
-    _should_not_throw(
-        [](auto const& a, auto const& b, auto& c) { c = a * b; },
-        *to_cxx_type(x), *to_cxx_type(y), *to_cxx_type(out));
-}
-
-extern "C" void tcm_cRBM_Divide(
-    tcm_cRBM const* const x, tcm_cRBM const* const y, tcm_cRBM* const out)
-{
-    _should_not_throw(
-        [](auto const& a, auto const& b, auto& c) { c = a / b; },
-        *to_cxx_type(x), *to_cxx_type(y), *to_cxx_type(out));
-}
-
-extern "C" void tcm_cRBM_Negate(
-    tcm_cRBM const* const x, tcm_cRBM* const out)
-{
-    _should_not_throw([](auto const& a, auto& c) { c = -a; },
-        *to_cxx_type(x), *to_cxx_type(out));
-}
-*/
-
-/*
-extern "C" void tcm_cMCMC_Destroy(tcm_cMCMC* p)
-{
-    TRACE();
-    if (p != nullptr) { delete p; }
-}
-
-extern "C" void tcm_zMCMC_Destroy(tcm_zMCMC* p)
-{
-    TRACE();
-    if (p != nullptr) { delete p; }
-}
-
-extern "C" void tcm_cMCMC_Log_wf(
-    tcm_cMCMC const* mcmc, tcm_Complex8* out)
-{
-    TRACE();
-    using T = tcm::McmcState<std::complex<float>>;
-    *static_cast<std::complex<float>*>(out) =
-        static_cast<T const*>(mcmc)->log_wf();
-}
-
-extern "C" void tcm_zMCMC_Log_wf(
-    tcm_zMCMC const* mcmc, tcm_Complex16* out)
-{
-    TRACE();
-    using T = tcm::McmcState<std::complex<double>>;
-    *static_cast<std::complex<double>*>(out) =
-        static_cast<T const*>(mcmc)->log_wf();
-}
-
-extern "C" void tcm_cMCMC_Log_quotient_wf1(tcm_cMCMC const* mcmc,
-    tcm_size_type const flip1, tcm_Complex8* out)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    *static_cast<std::complex<float>*>(out) =
-        static_cast<Mcmc const*>(mcmc)->log_quotient_wf(flip1);
-}
-
-extern "C" void tcm_zMCMC_Log_quotient_wf1(tcm_zMCMC const* mcmc,
-    tcm_size_type const flip1, tcm_Complex16* out)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    *static_cast<std::complex<double>*>(out) =
-        static_cast<Mcmc const*>(mcmc)->log_quotient_wf(flip1);
-}
-
-extern "C" void tcm_cMCMC_Log_quotient_wf2(tcm_cMCMC const* mcmc,
-    tcm_size_type const flip1, tcm_size_type const flip2,
-    tcm_Complex8* out)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    *static_cast<std::complex<float>*>(out) =
-        static_cast<Mcmc const*>(mcmc)->log_quotient_wf(flip1, flip2);
-}
-
-extern "C" void tcm_zMCMC_Log_quotient_wf2(tcm_zMCMC const* mcmc,
-    tcm_size_type const flip1, tcm_size_type const flip2,
-    tcm_Complex16* out)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    *static_cast<std::complex<double>*>(out) =
-        static_cast<Mcmc const*>(mcmc)->log_quotient_wf(flip1, flip2);
-}
-
-extern "C" float tcm_cMCMC_Propose1(
-    tcm_cMCMC const* mcmc, tcm_size_type const flip1)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    return static_cast<Mcmc const*>(mcmc)->propose(flip1);
-}
-
-extern "C" double tcm_zMCMC_Propose1(
-    tcm_zMCMC const* mcmc, tcm_size_type const flip1)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    return static_cast<Mcmc const*>(mcmc)->propose(flip1);
-}
-
-extern "C" float tcm_cMCMC_Propose2(tcm_cMCMC const* mcmc,
-    tcm_size_type const flip1, tcm_size_type const flip2)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    return static_cast<Mcmc const*>(mcmc)->propose(flip1, flip2);
-}
-
-extern "C" double tcm_zMCMC_Propose2(tcm_zMCMC const* mcmc,
-    tcm_size_type const flip1, tcm_size_type const flip2)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    return static_cast<Mcmc const*>(mcmc)->propose(flip1, flip2);
-}
-
-extern "C" void tcm_cMCMC_Accept1(
-    tcm_cMCMC* mcmc, tcm_size_type const flip1)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    return static_cast<Mcmc*>(mcmc)->accept(flip1);
-}
-
-extern "C" void tcm_zMCMC_Accept1(
-    tcm_zMCMC* mcmc, tcm_size_type const flip1)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    return static_cast<Mcmc*>(mcmc)->accept(flip1);
-}
-
-extern "C" void tcm_cMCMC_Accept2(tcm_cMCMC* mcmc,
-    tcm_size_type const flip1, tcm_size_type const flip2)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    return static_cast<Mcmc*>(mcmc)->accept(flip1, flip2);
-}
-
-extern "C" void tcm_zMCMC_Accept2(tcm_zMCMC* mcmc,
-    tcm_size_type const flip1, tcm_size_type const flip2)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    return static_cast<Mcmc*>(mcmc)->accept(flip1, flip2);
-}
-
-extern "C" void tcm_cMCMC_Print(tcm_cMCMC const* const mcmc)
-{
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    pretty_print(stdout, static_cast<Mcmc const&>(*mcmc));
-    std::fprintf(stdout, "\n");
-}
-
-extern "C" void tcm_zMCMC_Print(tcm_zMCMC const* const mcmc)
-{
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    pretty_print(stdout, static_cast<Mcmc const&>(*mcmc));
-    std::fprintf(stdout, "\n");
-}
-
-extern "C"
-void tcm_cHH1DOpen_Local_energy(tcm_cMCMC const* mcmc, tcm_Complex8* out)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<float>>;
-    *static_cast<std::complex<float>*>(out) =
-        tcm::heisenberg_1d(static_cast<Mcmc const&>(*mcmc));
-}
-
-extern "C"
-void tcm_zHH1DOpen_Local_energy(tcm_zMCMC const* mcmc, tcm_Complex16* out)
-{
-    TRACE();
-    using Mcmc = tcm::McmcState<std::complex<double>>;
-    *static_cast<std::complex<double>*>(out) =
-        tcm::heisenberg_1d(static_cast<Mcmc const&>(*mcmc));
-}
-*/
-
-/*
-extern "C" void tcm_cRBM_heisenberg_1d(tcm_cRBM const* rbm,
-    tcm_size_type const offset, tcm_size_type const steps,
-    tcm_sMeasurement* out)
-{
-    TRACE();
-    _should_not_throw(
-        [](auto const& x, auto const skip, auto const count,
-            auto& result) {
-            constexpr auto                                  N = 4u;
-            tcm::momenta_accumulator<N, float, long double> acc;
-            tcm::mcmc_block(x,
-                [&acc](auto const& state) {
-                    return acc(tcm::heisenberg_1d(state).real());
-                },
-                skip, count, 0);
-            result.mean = acc.get<1>();
-            result.var  = acc.get<4>() / std::pow(acc.get<2>(), 2.0f);
-        },
-        *to_cxx_type(rbm), offset, steps, *out);
-}
-*/
+#undef ASSERT_NOT_NULL
