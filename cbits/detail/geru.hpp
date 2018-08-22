@@ -35,6 +35,7 @@
 #define TCM_SWARM_DETAIL_GERU_HPP
 
 #include <gsl/gsl>
+#include <iostream>
 
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
@@ -43,8 +44,6 @@ TCM_SWARM_BEGIN_NAMESPACE
 namespace mkl {
 
 namespace detail {
-    namespace {
-
 #define TCM_SWARM_GERU_SIGNATURE_FOR(T)                                   \
     auto geru(CBLAS_LAYOUT const layout, difference_type const m,         \
         difference_type const n, T const alpha, T const* const x,         \
@@ -55,14 +54,14 @@ namespace detail {
         TCM_SWARM_FORCEINLINE
         TCM_SWARM_GERU_SIGNATURE_FOR(float)
         {
-            return cblas_sger(
+            cblas_sger(
                 layout, m, n, alpha, x, inc_x, y, inc_y, a, ld_a);
         }
 
         TCM_SWARM_FORCEINLINE
         TCM_SWARM_GERU_SIGNATURE_FOR(double)
         {
-            return cblas_dger(
+            cblas_dger(
                 layout, m, n, alpha, x, inc_x, y, inc_y, a, ld_a);
         }
 
@@ -79,13 +78,12 @@ namespace detail {
         }
 
 #undef TCM_SWARM_GERU_SIGNATURE_FOR
-
-    } // namespace
 } // namespace detail
 
 struct geru_fn {
     template <class T>
-    TCM_SWARM_FORCEINLINE auto operator()(T const alpha,
+    TCM_SWARM_FORCEINLINE
+    auto operator()(T const alpha,
         gsl::span<T const> const x, gsl::span<T const> const y,
         gsl::span<T> const a, mkl::Layout const layout) const
         noexcept(!tcm::detail::gsl_can_throw()) -> void
@@ -95,7 +93,7 @@ struct geru_fn {
         auto const m    = gsl::narrow<difference_type>(x.size());
         auto const n    = gsl::narrow<difference_type>(y.size());
         auto const ld_a = layout == Layout::ColMajor ? m : n;
-        return detail::geru(to_raw_enum(layout), m, n, alpha, x.data(),
+        detail::geru(to_raw_enum(layout), m, n, alpha, x.data(),
             one, y.data(), one, a.data(), ld_a);
     }
 };

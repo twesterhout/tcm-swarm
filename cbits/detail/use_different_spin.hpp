@@ -37,29 +37,37 @@
 #include <stdexcept>
 #include <vector>
 
+#include <gsl/span>
+
 TCM_SWARM_BEGIN_NAMESPACE
 
-template <class VectorType>
-struct use_different_spin : std::exception {
+struct use_different_spin : public virtual std::exception {
+    // TODO(twesterhout): This should be taken from McmcState!
+    using index_type = std::ptrdiff_t;
+
+    template <std::size_t N>
+    use_different_spin(std::array<index_type, N> flips) noexcept
+        : _flips{std::begin(flips), std::end(flips)}
+    {
+    }
+
+    use_different_spin(std::vector<index_type> flips) noexcept
+        : _flips{std::move(flips)}
+    {
+    }
+
+    virtual auto what() const noexcept -> char const* override
+    {
+        return "Try starting from a different spin configuration.";
+    }
+
+    auto flips() const & noexcept -> gsl::span<index_type const>
+    {
+        return {_flips};
+    }
 
   private:
-    VectorType _spin;
-
-  public:
-    use_different_spin(VectorType spin) noexcept
-        : _spin(std::move(spin))
-    {
-    }
-
-    virtual auto what() const noexcept -> char const* override final
-    {
-        return "This spin configuration is worth nothing, "
-               "try starting with a different one.";
-    }
-
-    auto const& get_spin() const& noexcept { return _spin; }
-    auto&       get_spin() & noexcept { return _spin; }
-    auto&&      get_spin() && noexcept { return std::move(_spin); }
+    std::vector<index_type> _flips;
 };
 
 TCM_SWARM_END_NAMESPACE

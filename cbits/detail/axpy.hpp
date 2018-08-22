@@ -34,16 +34,16 @@
 #ifndef TCM_SWARM_DETAIL_AXPY_HPP
 #define TCM_SWARM_DETAIL_AXPY_HPP
 
-#include <gsl/span>
-#include <gsl/multi_span>
-
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
+
+#include <gsl/span>
 
 TCM_SWARM_BEGIN_NAMESPACE
 namespace mkl {
 
 namespace detail {
+// NOLINTNEXTLINE(bugprone-macro-parentheses)
 #define TCM_SWARM_AXPY_SIGNATURE_FOR(C, T)                                \
     auto axpy(difference_type n, C const alpha, T const* const x,         \
         difference_type const inc_x, T* const y,                          \
@@ -85,27 +85,18 @@ struct axpy_fn {
     /// \brief Implementation for #gsl::span.
     ///
     /// \see [cblas_?axpy](https://software.intel.com/en-us/mkl-developer-reference-c-cblas-axpy).
-    template <class C, class T, template <class, std::ptrdiff_t> class SpanX,
-        template <class, std::ptrdiff_t> class SpanY, std::ptrdiff_t DimX,
-        std::ptrdiff_t DimY>
-    TCM_SWARM_FORCEINLINE auto operator()(C const alpha,
-        SpanX<T const, DimX> const x, SpanY<T, DimY> const y) const
+    template <class C, class T, class T_, std::ptrdiff_t N,
+        class = std::enable_if_t<std::is_same_v<std::remove_const_t<T_>, T>>>
+    auto operator()(
+        C const alpha, gsl::span<T_, N> const x, gsl::span<T, N> const y) const
         noexcept(!::tcm::detail::gsl_can_throw()) -> void
     {
-        // clang-format off
-        static_assert(
-            std::is_same_v<SpanX<T const, DimX>, gsl::span<T const, DimX>>
-         || std::is_same_v<SpanX<T const, DimX>, gsl::multi_span<T const, DimX>>,
-            "tcm::mkl::axpy currently only supports gsl::span and gsl::multi_span.");
-        static_assert(
-            std::is_same_v<SpanY<T, DimY>, gsl::span<T, DimY>>
-         || std::is_same_v<SpanY<T, DimY>, gsl::multi_span<T, DimY>>,
-            "tcm::mkl::axpy currently only supports gsl::span and gsl::multi_span.");
-        // clang-format on
-        Expects(x.size() == y.size());
+        if constexpr (N == gsl::dynamic_extent) {
+            Expects(x.size() == y.size());
+        }
         constexpr difference_type one{1};
-        return detail::axpy(gsl::narrow<difference_type>(x.size()), alpha,
-            x.data(), one, y.data(), one);
+        detail::axpy(gsl::narrow<difference_type>(x.size()), alpha, x.data(),
+            one, y.data(), one);
     }
 };
 

@@ -44,8 +44,6 @@ TCM_SWARM_BEGIN_NAMESPACE
 namespace mkl {
 
 namespace detail {
-    namespace {
-
 #define TCM_SWARM_TANH_SIGNATURE_FOR(T)                                   \
     auto tanh(difference_type const n, T const* const x,                  \
         T* const y) noexcept->void
@@ -53,30 +51,27 @@ namespace detail {
         TCM_SWARM_FORCEINLINE
         TCM_SWARM_TANH_SIGNATURE_FOR(float)
         {
-            return vsTanh(n, x, y);
+            vsTanh(n, x, y);
         }
 
         TCM_SWARM_FORCEINLINE
         TCM_SWARM_TANH_SIGNATURE_FOR(double)
         {
-            return vdTanh(n, x, y);
+            vdTanh(n, x, y);
         }
 
         TCM_SWARM_FORCEINLINE
         TCM_SWARM_TANH_SIGNATURE_FOR(std::complex<float>)
         {
-            return vcTanh(n, x, y);
+            vcTanh(n, x, y);
         }
 
         TCM_SWARM_FORCEINLINE
         TCM_SWARM_TANH_SIGNATURE_FOR(std::complex<double>)
         {
-            return vzTanh(n, x, y);
+            vzTanh(n, x, y);
         }
-
 #undef TCM_SWARM_TANH_SIGNATURE_FOR
-
-    } // namespace
 } // namespace detail
 
 struct tanh_fn {
@@ -84,11 +79,15 @@ struct tanh_fn {
     template <class T>
     TCM_SWARM_FORCEINLINE
     auto operator()(gsl::span<T const> const x, gsl::span<T> const y)
-        const noexcept(!::TCM_SWARM_NAMESPACE::detail::gsl_can_throw())
+        const noexcept(!::TCM_SWARM_NAMESPACE::detail::gsl_can_throw()) -> void
     // clang-format on
     {
         Expects(x.size() == y.size());
-        return detail::tanh(
+        // for (auto i = 0; i < x.size(); ++i)
+        // {
+        //     y[i] = std::tanh(x[i]);
+        // }
+        detail::tanh(
             gsl::narrow<difference_type>(x.size()), x.data(), y.data());
     }
 };

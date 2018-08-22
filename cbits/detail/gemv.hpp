@@ -146,6 +146,21 @@ struct gemv_fn {
     }
 
     // clang-format off
+    template <class T>
+    TCM_SWARM_FORCEINLINE
+    auto operator()(Layout const layout, Transpose const trans,
+        difference_type const m, difference_type const n,
+        T const alpha, T const* const a, difference_type const ld_a,
+        T const* const x, difference_type const inc_x,
+        T beta, T* const y, difference_type const inc_y)
+        // clang-format on
+        const noexcept -> void
+    {
+        detail::gemv(to_raw_enum(layout), to_raw_enum(trans), m, n, alpha, a,
+            ld_a, x, inc_x, beta, y, inc_y);
+    }
+
+    // clang-format off
     template <class T, std::ptrdiff_t DimA1, std::ptrdiff_t DimA2,
         std::ptrdiff_t DimX, std::ptrdiff_t DimY>
     TCM_SWARM_FORCEINLINE

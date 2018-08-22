@@ -32,14 +32,24 @@
 #ifndef TCM_SWARM_DETAIL_CONFIG_HPP
 #define TCM_SWARM_DETAIL_CONFIG_HPP
 
-#include <cstddef>
 #include <gsl/gsl_assert>
+#include <boost/config.hpp>
+#include <complex>
+#include <cstddef>
+#include <cstdint>
 
 #define TCM_SWARM_NAMESPACE tcm
 
 #define TCM_SWARM_BEGIN_NAMESPACE namespace tcm {
 
 #define TCM_SWARM_END_NAMESPACE } /* tcm */
+
+#define TCM_SWARM_ISSUES_LINK "https://github.com/twesterhout/tcm-swarm/issues"
+
+#define TCM_SWARM_SYMBOL_EXPORT BOOST_SYMBOL_EXPORT
+#define TCM_SWARM_SYMBOL_IMPORT BOOST_SYMBOL_IMPORT
+#define TCM_SWARM_SYMBOL_VISIBLE BOOST_SYMBOL_VISIBLE
+
 
 #if defined(__clang__)
 // ===========================================================================
@@ -163,20 +173,39 @@ TCM_SWARM_END_NAMESPACE
     /**/
 #endif
 
+// TODO(twesterhout): These really don't belong here, but well...
 TCM_SWARM_BEGIN_NAMESPACE
 
 namespace detail {
-    constexpr auto gsl_can_throw() noexcept -> bool
-    {
+constexpr auto gsl_can_throw() noexcept -> bool
+{
 #if defined(GSL_THROW_ON_CONTRACT_VIOLATION)
-        return true;
-#elif defined(GSL_TERMINATE_ON_CONTRACT_VIOLATION)                        \
+    return true;
+#elif defined(GSL_TERMINATE_ON_CONTRACT_VIOLATION)                             \
     || defined(GSL_UNENFORCED_ON_CONTRACT_VIOLATION)
-        return false;
+    return false;
 #else
 #error "BUG! This function assumes that <gsl/gsl_assert> is included!"
 #endif
-    }
+}
+
+template <std::size_t Alignment, class T>
+auto is_aligned(T const* pointer) noexcept -> bool
+{
+    static_assert(Alignment > 0 && (Alignment & (Alignment - 1)) == 0,
+        "Invalid alignment.");
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return reinterpret_cast<std::uintptr_t>(pointer) % Alignment == 0;
+}
+
+template <class T>
+struct is_complex : std::false_type {
+};
+template <class T>
+struct is_complex<std::complex<T>> : std::true_type {
+};
+template <class T>
+inline constexpr bool is_complex_v = is_complex<T>::value;
 } // namespace detail
 
 TCM_SWARM_END_NAMESPACE

@@ -324,7 +324,7 @@ namespace {
     TCM_SWARM_FORCEINLINE
     auto _sincos(Vc::simd<float, Vc::simd_abi::avx> const x) noexcept
     {
-        __m256 sin_out = __svml_sincosf8(static_cast<__m256 const>(x));
+        __m256 sin_out = __svml_sincosf8(static_cast<__m256>(x));
         __m256 cos_out;
         __asm__ __volatile__ ("vmovaps %%ymm1, %0":"=m"(cos_out));
         return std::make_tuple(
@@ -786,7 +786,7 @@ auto TCM_SWARM_NOINLINE sum_log_cosh(
             std::cout << y << '\n';
             Expects(false);
         }
-        sum += _log_cosh(y);
+        sum += std::log(std::cosh(y));
     }
     return sum;
 #else
