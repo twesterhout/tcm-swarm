@@ -32,9 +32,13 @@
 #ifndef TCM_SWARM_ACCUMULATORS_HPP
 #define TCM_SWARM_ACCUMULATORS_HPP
 
-#include "detail/config.hpp"
+#include "detail/axpy.hpp"
 #include "detail/errors.hpp"
-#include "spin.hpp"
+#include "detail/scale.hpp"
+#include "gradients.hpp"
+#include "mcmc_state.hpp"
+#include "memory.hpp"
+#include "spin_utils.hpp"
 
 #include <algorithm>
 #include <array>
@@ -46,31 +50,23 @@
 #include <unordered_map>
 #include <utility>
 
-#include <gsl/span>
-#include <gsl/multi_span>
+#include <gsl/gsl>
 
 TCM_SWARM_BEGIN_NAMESPACE
 
-template <class IndexType = long>
+
+/// \brief A counting accumulator.
+///
+/// This accumulator is used to maintain the current iteration number in the
+/// Monte-Carlo loop.
 struct Counter {
-    static_assert(std::is_integral_v<IndexType>,
-        "tcm::Counter: `IndexType` must be an integral type.");
+    using index_type = std::ptrdiff_t;
 
-    using index_type = IndexType;
-
-    constexpr Counter() noexcept
-        : _n{0}
-    {
-    }
-
-    constexpr Counter(index_type const count)
+    constexpr Counter() noexcept : _n{0} {}
+    constexpr explicit Counter(index_type const count) noexcept(!detail::gsl_can_throw())
         : _n{count}
     {
-        if (count < 0) {
-            throw_with_trace(std::invalid_argument{
-                "Can't create a counter with negative count ("
-                + std::to_string(count) + ")."});
-        }
+        Expects(count >= 0);
     }
 
     constexpr Counter(Counter const&) noexcept = default;
@@ -78,26 +74,28 @@ struct Counter {
     constexpr Counter& operator=(Counter const&) noexcept = default;
     constexpr Counter& operator=(Counter&&) noexcept = default;
 
-    constexpr auto operator()() noexcept(!detail::gsl_can_throw())
-    {
-        constexpr auto max_count = std::numeric_limits<index_type>::max();
-        Expects(_n < max_count);
-        ++_n;
-    }
+    constexpr auto operator()() noexcept { ++_n; }
 
     template <class T>
-    constexpr auto operator()(T&& /*unused*/) noexcept(
-        !detail::gsl_can_throw())
+    constexpr auto operator()(T&& /*unused*/) noexcept
     {
-        operator()();
+        (*this)();
     }
 
+    /// \brief Resets the counter to 0.
     constexpr auto reset() noexcept -> void { _n = 0; }
 
+    /// \brief Returns the current count.
     constexpr auto count() const noexcept -> index_type { return _n; }
 
-    constexpr decltype(auto) merge(Counter const& other) noexcept
+    /// \brief Combines the result with another counter.
+    ///
+    /// Total count after executing merge is just the sum of two counts.
+    constexpr decltype(auto) merge(Counter const other) noexcept(
+        !detail::gsl_can_throw())
     {
+        constexpr auto max_count = std::numeric_limits<index_type>::max();
+        Expects(max_count - _n >= other._n);
         _n += other._n;
         return *this;
     }
@@ -106,27 +104,28 @@ struct Counter {
     index_type _n;
 };
 
+
+/// \brief Accumulates the first N statistical moments.
+template <std::size_t N, class T, class = void>
+struct MomentsAccumulator;
+
 template <std::size_t N, class T>
-struct MomentsAccumulator : public Counter<> {
+struct MomentsAccumulator<N, T, std::enable_if_t<std::is_floating_point_v<T>>>
+    : public Counter {
 
-    static_assert(std::is_trivial_v<T>,
-        "Non-trivial types are not (yet) supported.");
-    using Counter<>::index_type;
     using value_type = T;
+    using Counter::count;
+    using Counter::index_type;
 
   private:
-    using base = Counter<>;
-
-  private:
+    using base = Counter;
     std::array<T, N> _data;
 
-  private:
-
-    static constexpr auto _bin(
-        std::size_t const k, std::size_t const n) -> std::size_t
+    static constexpr auto _bin(std::size_t const k, std::size_t const n)
+        -> std::size_t
     {
-        if (k > n) throw std::invalid_argument{"k should not exceed n."};
-        if (k == 0 || n == k) return 1u;
+        if (k > n) { throw std::invalid_argument{"k should not exceed n."}; }
+        if (k == 0 || n == k) { return 1u; }
         return _bin(k - 1, n - 1) + _bin(k, n - 1);
     }
 
@@ -143,8 +142,8 @@ struct MomentsAccumulator : public Counter<> {
     /// Suppose that ``cs... = cN, cN-1,..., c0``. Then this function
     /// returns ``c0 + c1 * x + c2 * x^2 + ... + cN * x^N``.
     template <class... Rs>
-    static constexpr auto horner(
-        value_type const x, Rs const... cs) noexcept -> value_type
+    static constexpr auto horner(value_type const x, Rs const... cs) noexcept
+        -> value_type
     {
         value_type sum{0};
         (static_cast<void>(sum = cs + x * sum), ...);
@@ -177,10 +176,12 @@ struct MomentsAccumulator : public Counter<> {
             "only work for P larger than 2.");
         constexpr auto sign =
             ((P - 1u) % 2u == 0u) ? value_type{1} : value_type{-1};
-        auto const n_min_1 = gsl::narrow<value_type>(n - 1);
-        return std::pow(n_min_1 * d, P)
+        auto const n_min_1 = gsl::narrow_cast<value_type>(n - 1);
+        return std::pow(n_min_1 * d, value_type{P})
                * (value_type{1}
-                     - sign * std::pow(value_type{1} / n_min_1, P - 1));
+                     - sign
+                           * std::pow(
+                                 value_type{1} / n_min_1, value_type{P - 1}));
     }
 
     //                       P-2, P-3, ..., 1
@@ -197,7 +198,7 @@ struct MomentsAccumulator : public Counter<> {
         static_assert(sizeof...(Ks) == P - 2,
             "This function requires `Ks... == P-2, P-3, ..., 1`");
         return _M<P>() + horner(-d, bin<Ks, P>() * _M<P - Ks>()..., 0)
-               + _pth_order_part<P>(d, this->count());
+               + _pth_order_part<P>(d, gsl::narrow_cast<std::size_t>(count()));
     }
 
     //                       0, 1, 2, ..., P-3
@@ -232,119 +233,150 @@ struct MomentsAccumulator : public Counter<> {
         static_assert(N > 2,
             "This function is meant for high-order momenta and will "
             "only work for N larger than 2.");
-        static_assert(std::min({Ps...}) == 0
-                          && std::max({Ps...}) == N - 3
+        static_assert(std::min({Ps...}) == 0 && std::max({Ps...}) == N - 3
                           && sizeof...(Ps) == N - 2,
             "This function requires `Ps... == 0, 1, 2, ..., N-3");
         std::array<value_type, N - 2> next_gen_Ms = {update<Ps + 3>(d)...};
         std::copy(std::begin(next_gen_Ms), std::end(next_gen_Ms),
-                  std::begin(_data) + 2u);
-    }
-
-    template <std::size_t... Is>
-    constexpr MomentsAccumulator(
-        std::index_sequence<Is...> /*unnused*/) noexcept
-        : base{}, _data{(static_cast<void>(Is), value_type{0})...}
-    {
+            std::begin(_data) + 2u);
     }
 
   public:
-    constexpr MomentsAccumulator() noexcept
-        : MomentsAccumulator(std::make_index_sequence<N>{})
+    /// \brief Initialises the accumulator.
+    MomentsAccumulator() noexcept : base{}
     {
+        std::fill(std::begin(_data), std::end(_data), 0);
     }
 
+    MomentsAccumulator(MomentsAccumulator const&)     = default;
+    MomentsAccumulator(MomentsAccumulator&&) noexcept = default;
+    MomentsAccumulator& operator=(MomentsAccumulator const&) = default;
+    MomentsAccumulator& operator=(MomentsAccumulator&&) noexcept = default;
+
+    /// \brief Records the next sample.
     template <class U,
         class = std::enable_if_t<std::is_convertible_v<U&&, value_type>>>
-    auto operator()(U&& next_sample) -> void
+    auto operator()(U&& next_sample) noexcept -> void
     {
-        static_cast<base*>(this)->operator()();
-        value_type const          y{std::forward<U>(next_sample)};
-        auto const                delta = y - _mu();
-        if (this->count() == 1) {
-            _mu() = y;
-            return;
+        static_cast<base&>(*this)(); // updates count
+        value_type const y{std::forward<U>(next_sample)};
+        auto const       delta = y - _mu();
+        if (count() == 1) { _mu() = y; }
+        else {
+            auto const d = delta / gsl::narrow_cast<value_type>(count());
+            // Clang-tidy doesn't work well with if constexpr yet
+            // NOLINTNEXTLINE
+            if constexpr (N > 2) {
+                _call(d, std::make_index_sequence<N - 2>{});
+            }
+            _mu() += d;
+            _M<2>() += delta * (y - _mu());
         }
-        auto const d = delta / gsl::narrow<value_type>(this->count());
-        if constexpr (N > 2) {
-            _call(d, std::make_index_sequence<N - 2>{});
-        }
-        _mu() += d;
-        _M<2>() += delta * (y - _mu());
     }
 
-    // Assumes _n > 0.
+    /// \brief Returns the P'th statistical moment.
+    ///
+    /// Assumes that count() > 0.
     template <std::size_t P>
-    constexpr auto get() const noexcept -> T
+    constexpr auto get() const noexcept(!detail::gsl_can_throw()) -> T
     {
         static_assert(1u <= P && P <= N);
-        if constexpr (P == 1u) {
-            return _mu();
-        }
+        if constexpr (P == 1u) { return _mu(); }
         else {
-            return _M<P>() / this->count();
+            Expects(count() > 0);
+            return _M<P>() / count();
         }
     }
 
+    /// \brief Resets the accumulator
+    auto reset() noexcept -> void
+    {
+        static_cast<base&>(*this).reset();
+        std::fill(std::begin(_data), std::end(_data), 0);
+    }
+
+    /// \brief Merges the results with another counter.
     constexpr decltype(auto) merge(MomentsAccumulator const& other)
     {
-        if (this->count() == 0 && other.count() == 0) { return *this; }
+        if (count() == 0 && other.count() == 0) { return *this; }
 
         value_type const sum =
-            _mu() * this->count() + other._mu() * other.count();
-        static_cast<base*>(this)->merge(other);
-        _mu() = sum / gsl::narrow<value_type>(this->count());
+            _mu() * count() + other._mu() * other.count();
+        static_cast<base&>(*this).merge(other);
+        _mu() = sum / gsl::narrow_cast<value_type>(count());
 
         if constexpr (N >= 2) {
-#pragma omp simd
+// Clang says that omp pragmas are not allowed in constexpr functions
+// #pragma omp simd
             for (std::size_t i = 1; i < N; ++i) {
+                // Yes I know what I'm doing: i _is_ within bounds
+                // NOLINTNEXTLINE
                 _data[i] += other._data[i];
             }
         }
 
         return *this;
     }
+
+  private:
+    template <class U, std::size_t... Is>
+    constexpr auto copy_to(
+        gsl::span<U, gsl::narrow_cast<std::ptrdiff_t>(N)> const out,
+        std::index_sequence<
+            Is...> /*unused*/) noexcept(!detail::gsl_can_throw())
+    {
+        (static_cast<void>(out[Is] = get<Is + 1>()), ...);
+    }
+
+  public:
+    template <class U,
+        class = std::enable_if_t<std::is_convertible_v<value_type, U>>>
+    constexpr auto copy_to(
+        gsl::span<U, gsl::narrow_cast<std::ptrdiff_t>(N)> const
+            out) noexcept(!detail::gsl_can_throw()) -> void
+    {
+        copy_to(out, std::make_index_sequence<N>{});
+    }
 };
 
+
 template <class T>
-struct MomentsAccumulator<1, T> : Counter<> {
+struct MomentsAccumulator<1, T, std::enable_if_t<std::is_floating_point_v<T>>>
+    : Counter {
 
     static_assert(std::is_trivial_v<T>,
         "Non-trivial types are not (yet) supported.");
-    using Counter<>::index_type;
+    using Counter::index_type;
     using value_type = T;
 
+    using Counter::count;
   private:
-    using base = Counter<>;
+    using base = Counter;
 
   public:
-    MomentsAccumulator()                          = default;
-    MomentsAccumulator(MomentsAccumulator const&) = default;
-    MomentsAccumulator(MomentsAccumulator&&)      = default;
+    constexpr MomentsAccumulator() noexcept : base{}, _mu{0} {}
+    MomentsAccumulator(MomentsAccumulator const&)     = default;
+    MomentsAccumulator(MomentsAccumulator&&) noexcept = default;
     MomentsAccumulator& operator=(MomentsAccumulator const&) = default;
-    MomentsAccumulator& operator=(MomentsAccumulator&&) = default;
+    MomentsAccumulator& operator=(MomentsAccumulator&&) noexcept = default;
 
-    template <class U,
-        class = std::enable_if_t<std::is_convertible_v<U, T>>>
-    constexpr auto operator()(U&& x) noexcept(!detail::gsl_can_throw())
+    template <class U, class = std::enable_if_t<std::is_convertible_v<U, T>>>
+    constexpr auto operator()(U&& x)
     {
-        static_cast<base*>(this)->operator()();
-        if (this->count() == 1) { _mu = value_type{std::forward<U>(x)}; }
-        else {
-            _mu += (value_type{std::forward<U>(x)} - _mu)
-                   / gsl::narrow<value_type>(this->count());
-        }
+        static_cast<base&>(*this)(); // update count
+        value_type const y{std::forward<U>(x)};
+        _mu += (y - _mu) / gsl::narrow_cast<value_type>(count());
     }
 
-    constexpr auto reset() noexcept
+    constexpr auto reset() -> void
     {
         static_cast<base*>(this)->reset();
-        _mu = value_type{};
+        _mu = 0;
     }
 
-    constexpr auto mean() noexcept -> value_type
+    constexpr auto mean() noexcept(!detail::gsl_can_throw()) -> value_type
     {
-        Expects(this->count() != 0);
+        Expects(count() > 0);
         return _mu;
     }
 
@@ -358,275 +390,316 @@ struct MomentsAccumulator<1, T> : Counter<> {
 
     constexpr decltype(auto) merge(MomentsAccumulator const& other)
     {
-        if (this->count() == 0 && other.count() == 0) { return *this; }
+        if (count() == 0 && other.count() == 0) { return *this; }
         value_type const sum =
-            _mu * this->count() + other._mu * other.count();
-        static_cast<base*>(this)->merge(other);
-        _mu = sum / gsl::narrow<value_type>(this->count());
+            _mu * count() + other._mu * other.count();
+        static_cast<base&>(*this).merge(static_cast<base const&>(other));
+        _mu = sum / gsl::narrow_cast<value_type>(count());
         return *this;
+    }
+
+    template <class U,
+        class = std::enable_if_t<std::is_convertible_v<value_type, U>>>
+    constexpr auto copy_to(gsl::span<U, 1> const out) noexcept(
+        !detail::gsl_can_throw())
+    {
+        out[0] = _mu;
     }
 
   private:
     value_type _mu;
 };
 
-template <std::size_t N, class C, class Hamiltonian>
-class EnergyAccumulator {
-    using R = typename C::value_type;
+template <std::size_t N, class T>
+struct MomentsAccumulator<N, std::complex<T>,
+    std::enable_if_t<std::is_floating_point_v<T>>> {
 
-    // This is sub-optimal, because both MomentsAccumulators derive from Counter
-    // and we end up counting twice... But I think it doesn't matter much in this
-    // case.
-    std::tuple<MomentsAccumulator<N, R>, MomentsAccumulator<N, R>,
-        Hamiltonian>
-        _payload;
+    using value_type = std::complex<T>;
+    using index_type = typename MomentsAccumulator<N, T>::index_type;
 
-  protected:
-    constexpr auto const& real() const& noexcept
-    {
-        return std::get<0>(_payload);
-    }
-
-    constexpr auto& real() & noexcept { return std::get<0>(_payload); }
-
-    constexpr auto real() && noexcept
-    {
-        return std::move(std::get<0>(_payload));
-    }
-
-    constexpr auto const& imag() const& noexcept
-    {
-        return std::get<1>(_payload);
-    }
-
-    constexpr auto& imag() & noexcept { return std::get<1>(_payload); }
-
-    constexpr auto imag() && noexcept
-    {
-        return std::move(std::get<1>(_payload));
-    }
-
-    constexpr auto const& hamiltonian() const noexcept
-    {
-        return std::get<2>(_payload);
-    }
+  private:
+    // TODO(twesterhout): This is sub-optimal, because both MomentsAccumulators
+    // derive from Counter and we end up counting twice... But I think it
+    // doesn't matter much in this case.
+    MomentsAccumulator<N, T> _real;
+    MomentsAccumulator<N, T> _imag;
 
   public:
-    constexpr EnergyAccumulator(Hamiltonian&& hamiltonian)
-        : _payload{{}, {}, std::move(hamiltonian)}
+    MomentsAccumulator() = default;
+    MomentsAccumulator(MomentsAccumulator const&) = default;
+    MomentsAccumulator(MomentsAccumulator&&) noexcept = default;
+    MomentsAccumulator& operator=(MomentsAccumulator const&) = default;
+    MomentsAccumulator& operator=(MomentsAccumulator&&) noexcept = default;
+
+    template <class U,
+        class = std::enable_if_t<std::is_convertible_v<U, value_type>>>
+    constexpr auto operator()(U&& x) noexcept
     {
+        value_type const y{std::forward<U>(x)};
+        _real(y.real());
+        _imag(y.imag());
     }
 
-    constexpr EnergyAccumulator(Hamiltonian const& hamiltonian)
-        : _payload{MomentsAccumulator<N, R>{}, MomentsAccumulator<N, R>{},
-              Hamiltonian{hamiltonian}}
+    constexpr auto count() const noexcept { return _real.count(); }
+
+    constexpr auto reset() noexcept -> void
     {
+        _real.reset();
+        _imag.reset();
     }
 
-    EnergyAccumulator(EnergyAccumulator const&) = default;
-    EnergyAccumulator(EnergyAccumulator&&)      = default;
-    EnergyAccumulator& operator=(EnergyAccumulator const&) = default;
-    EnergyAccumulator& operator=(EnergyAccumulator&&) = default;
-
-    constexpr decltype(auto) operator()(C const local_energy)
+    template <std::size_t P>
+    constexpr auto get() const noexcept(!detail::gsl_can_throw()) -> value_type
     {
-        real()(local_energy.real());
-        imag()(local_energy.imag());
+        Expects(count() > 0);
+        return {_real.template get<P>(), _imag.template get<P>()};
+    }
+
+    constexpr decltype(auto) merge(MomentsAccumulator const& other) noexcept
+    {
+        _real.merge(other._real);
+        _imag.merge(other._imag);
         return *this;
     }
 
-    template <class State>
-    constexpr decltype(auto) operator()(State&& state)
+  private:
+    template <class U, std::size_t... Is>
+    constexpr auto copy_to(
+        gsl::span<U, gsl::narrow_cast<std::ptrdiff_t>(N)> const out,
+        std::index_sequence<
+            Is...> /*unused*/) noexcept(!detail::gsl_can_throw())
     {
-        auto const local_energy = hamiltonian()(std::forward<State>(state));
-        return this->operator()(local_energy);
+        (static_cast<void>(out[Is] = get<Is + 1>()), ...);
+    }
+
+  public:
+    template <class U,
+        class = std::enable_if_t<std::is_convertible_v<value_type, U>>>
+    constexpr auto copy_to(
+        gsl::span<U, gsl::narrow_cast<std::ptrdiff_t>(N)> const
+            out) noexcept(!detail::gsl_can_throw())
+    {
+        copy_to(out, std::make_index_sequence<N>{});
+    }
+};
+
+template struct MomentsAccumulator<1, float>;
+template struct MomentsAccumulator<1, double>;
+template struct MomentsAccumulator<1, long double>;
+template struct MomentsAccumulator<1, std::complex<float>>;
+template struct MomentsAccumulator<1, std::complex<double>>;
+template struct MomentsAccumulator<1, std::complex<long double>>;
+template struct MomentsAccumulator<2, float>;
+template struct MomentsAccumulator<2, double>;
+template struct MomentsAccumulator<2, long double>;
+template struct MomentsAccumulator<2, std::complex<float>>;
+template struct MomentsAccumulator<2, std::complex<double>>;
+template struct MomentsAccumulator<2, std::complex<long double>>;
+template struct MomentsAccumulator<3, float>;
+template struct MomentsAccumulator<3, double>;
+template struct MomentsAccumulator<3, long double>;
+template struct MomentsAccumulator<3, std::complex<float>>;
+template struct MomentsAccumulator<3, std::complex<long double>>;
+template struct MomentsAccumulator<4, float>;
+template struct MomentsAccumulator<4, double>;
+template struct MomentsAccumulator<4, long double>;
+template struct MomentsAccumulator<4, std::complex<float>>;
+template struct MomentsAccumulator<4, std::complex<long double>>;
+
+template <std::size_t N, class C, class Hamiltonian>
+class EnergyAccumulator : public MomentsAccumulator<N, C> {
+
+    using R    = typename C::value_type;
+    using base = MomentsAccumulator<N, C>;
+
+  public:
+    explicit constexpr EnergyAccumulator(Hamiltonian hamiltonian) noexcept(
+        std::is_nothrow_move_constructible_v<Hamiltonian>)
+        : base{}, _hamiltonian{std::move(hamiltonian)}
+    {
+    }
+
+    EnergyAccumulator(EnergyAccumulator const&)     = default;
+    EnergyAccumulator(EnergyAccumulator&&) noexcept = default;
+    EnergyAccumulator& operator=(EnergyAccumulator const&) = default;
+    EnergyAccumulator& operator=(EnergyAccumulator&&) noexcept = default;
+
+    constexpr auto operator()(McmcState const& state) -> void
+    {
+        static_cast<base&> (*this)(_hamiltonian(state));
+    }
+
+  private:
+    Hamiltonian _hamiltonian;
+};
+
+template class EnergyAccumulator<1, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+template class EnergyAccumulator<1, std::complex<double>, std::function<std::complex<float>(McmcState const&)>>;
+template class EnergyAccumulator<2, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+template class EnergyAccumulator<3, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+template class EnergyAccumulator<4, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+
+template <std::size_t N, class C, class Hamiltonian>
+class CachingEnergyAccumulator : public MomentsAccumulator<N, C> {
+
+    using base = MomentsAccumulator<N, C>;
+
+  public:
+    using typename base::index_type;
+
+    struct Cache {
+        C          energy;
+        index_type count;
+    };
+
+    explicit CachingEnergyAccumulator(Hamiltonian hamiltonian)
+        : base{}, _cache{}, _hamiltonian{std::move(hamiltonian)}
+    {
+    }
+
+    CachingEnergyAccumulator(Hamiltonian hamiltonian, index_type const guess)
+        : base{}, _cache{}, _hamiltonian{std::move(hamiltonian)}
+    {
+        Expects(guess >= 0);
+        _cache.rehash(gsl::narrow_cast<std::size_t>(guess));
+    }
+
+    // clang-format off
+    CachingEnergyAccumulator(CachingEnergyAccumulator const&) = default;
+    CachingEnergyAccumulator(CachingEnergyAccumulator&&) noexcept = default;
+    CachingEnergyAccumulator& operator=(CachingEnergyAccumulator const&) = default;
+    CachingEnergyAccumulator& operator=(CachingEnergyAccumulator&&) noexcept = default;
+    // clang-format on
+
+  private:
+    auto&       parent() & noexcept { return static_cast<base&>(*this); }
+
+  public:
+    auto operator()(McmcState const& state) -> void
+    {
+        auto spin = to_bitset(state.spin());
+        if (auto i = _cache.find(spin); i != std::end(_cache)) {
+            auto& cache = i->second;
+            parent()(cache.energy);
+            ++cache.count;
+        }
+        else {
+            auto const local_energy = _hamiltonian(state);
+            parent()(local_energy);
+            auto const [iterator, success] =
+                _cache.emplace(std::move(spin), Cache{local_energy, 1});
+            Ensures(success);
+        }
     }
 
     constexpr auto reset() -> void
     {
-        real().reset();
-        imag().reset();
+        parent().reset();
+        for (auto& [_, c] : _cache) {
+            c.count = 0;
+        }
     }
 
-    template <std::size_t P>
-    constexpr auto get() const noexcept(!detail::gsl_can_throw()) -> C
-    {
-        static_assert(1u <= P && P <= N);
-        return {real().template get<P>(), imag().template get<P>()};
-    }
-
-    constexpr auto count() const noexcept { return real().count(); }
-
-    constexpr decltype(auto) merge(EnergyAccumulator const& other)
-    {
-        real().merge(other.real());
-        imag().merge(other.imag());
-        return *this;
-    }
-};
-
-
-template <std::size_t N, class C, class Hamiltonian>
-class CachingEnergyAccumulator : public EnergyAccumulator<N, C, Hamiltonian> {
-
-    struct element_type {
-        C   energy;
-        int count;
-    };
-
-    std::unordered_map<std::vector<bool>, element_type> _cache;
+    constexpr auto const& cache() const& noexcept { return _cache; }
+    constexpr auto&       cache() & noexcept { return _cache; }
+    constexpr auto        cache() && { return std::move(_cache); }
 
   private:
-    constexpr decltype(auto) base() noexcept
-    {
-        return static_cast<EnergyAccumulator<N, C, Hamiltonian>&>(*this);
-    }
-
-    constexpr decltype(auto) base() const noexcept
-    {
-        return static_cast<EnergyAccumulator<N, C, Hamiltonian> const&>(
-            *this);
-    }
-
-  public:
-    CachingEnergyAccumulator(Hamiltonian&& hamiltonian)
-        : EnergyAccumulator<N, C, Hamiltonian>{std::move(hamiltonian)}
-        , _cache{}
-    {
-    }
-
-    CachingEnergyAccumulator(Hamiltonian const& hamiltonian)
-        : EnergyAccumulator<N, C, Hamiltonian>{hamiltonian}, _cache{}
-    {
-    }
-
-    CachingEnergyAccumulator(CachingEnergyAccumulator const&) = default;
-    CachingEnergyAccumulator(CachingEnergyAccumulator&&)      = default;
-    CachingEnergyAccumulator& operator=(CachingEnergyAccumulator const&) = default;
-    CachingEnergyAccumulator& operator=(CachingEnergyAccumulator&&) = default;
-
-    template <class State>
-    constexpr decltype(auto) operator()(State&& state)
-    {
-        auto spin = to_bitset(state.spin());
-        C local_energy;
-        if (auto i = _cache.find(spin); i != std::end(_cache)) {
-            auto& cache  = i->second;
-            local_energy = cache.energy;
-            ++cache.count;
-        }
-        else {
-            local_energy =
-                this->hamiltonian()(std::forward<State>(state));
-            auto const [iterator, success] =
-                _cache.insert({std::move(spin), {local_energy, 1}});
-            Expects(success);
-        }
-        base()(local_energy);
-        return *this;
-    }
-
-    constexpr decltype(auto) reset()
-    {
-        for (auto& value : _cache) {
-            value.second.count = 0;
-        }
-        base().reset();
-    }
-
-    constexpr auto const& cache() const& noexcept
-    {
-        return _cache;
-    }
-
-    constexpr auto& cache() & noexcept
-    {
-        return _cache;
-    }
-
-    constexpr auto cache() &&
-    {
-        return std::move(_cache);
-    }
+    std::unordered_map<std::vector<bool>, Cache> _cache;
+    // TODO(twesterhout): This could probably benefit from EBO.
+    Hamiltonian _hamiltonian;
 };
 
+template class CachingEnergyAccumulator<1, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+template class CachingEnergyAccumulator<1, std::complex<double>, std::function<std::complex<float>(McmcState const&)>>;
+template class CachingEnergyAccumulator<2, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+template class CachingEnergyAccumulator<3, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+template class CachingEnergyAccumulator<4, std::complex<float>, std::function<std::complex<float>(McmcState const&)>>;
+
 template <std::size_t N, class C, class Hamiltonian>
-class GradientAccumulator : public EnergyAccumulator<N, C, Hamiltonian> {
+class GradientAccumulator : public MomentsAccumulator<N, C> {
 
-    using base = EnergyAccumulator<N, C, Hamiltonian>;
-
-    using energies_type = gsl::span<C, gsl::dynamic_extent>;
-    using gradients_type =
-        gsl::multi_span<C, gsl::dynamic_extent, gsl::dynamic_extent>;
-    // using index_type = typename energies_type::index_type;
-
-    energies_type  _energies;
-    gradients_type _gradients;
-
+    using base = MomentsAccumulator<N, C>;
 
   public:
+    using energies_type  = gsl::span<C>;
+    using gradients_type = Gradients<C>;
     using base::count;
-    using base::hamiltonian;
 
-    GradientAccumulator(Hamiltonian ham,
+    GradientAccumulator(Hamiltonian hamiltonian,
         energies_type const         energy_storage,
         gradients_type const        gradient_storage)
-        : base{std::move(ham)}
+        : _hamiltonian{std::move(hamiltonian)}
         , _energies{energy_storage}
         , _gradients{gradient_storage}
     {
         Expects(_energies.size() == _gradients.template extent<0>());
     }
 
-    template <class State>
-    decltype(auto) operator()(State& state)
+    auto operator()(McmcState const& state) -> void
     {
+        if (count() >= _energies.size()) {
+            std::ostringstream msg;
+            msg << "GradientAccumulator::operator(): count = " << count()
+                << ", but _energies.size() = " << _energies.size() << '\n';
+            std::cerr << msg.str() << std::flush;
+        }
         Expects(count() < _energies.size());
         Expects(_gradients.template extent<1>() == state.size());
 
-        auto const local_energy = hamiltonian()(state);
+        auto const local_energy = _hamiltonian(state);
         _energies[count()]      = local_energy;
         state.der_log_wf(_gradients[count()]);
-        static_cast<base*>(this)->operator()(local_energy);
-        return *this;
+        static_cast<base&>(*this)(local_energy);
     }
 
-    auto reset()
-    {
-        static_cast<base*>(this)->reset();
-    }
+    auto reset() -> void { static_cast<base*>(this)->reset(); }
+
+  private:
+    Hamiltonian    _hamiltonian;
+    energies_type  _energies;
+    gradients_type _gradients;
 };
 
 template <std::size_t N, class C, class Hamiltonian>
-class CachingGradientAccumulator
-    : public EnergyAccumulator<N, C, Hamiltonian> {
+class CachingGradientAccumulator : public MomentsAccumulator<N, C> {
 
-    class cache_type {
-        C   _energy;
-        int _count;
-        int _iteration;
+    using base = MomentsAccumulator<N, C>;
+
+  public:
+    using energies_type  = gsl::span<C>;
+    using gradients_type = Gradients<C>;
+    using base::count;
+    using typename base::index_type;
+
+    class Cache {
+        C          _energy; ///< Local energy
+        index_type _count;  ///< Number of times this spin
+                            /// configuration has been encountered.
+        index_type
+            _iteration; ///< Iteration at which this spin configuration has
+                        /// already been encountered (i.e. iteration where
+                        /// to steal the gradient from).
 
       public:
-        constexpr cache_type(C const energy) noexcept
+        constexpr Cache(C const energy) noexcept
             : _energy{energy}, _count{1}, _iteration{-1}
         {
         }
 
-        constexpr cache_type(C const energy, int const iteration) noexcept(
+        constexpr Cache(C const energy, index_type const iteration) noexcept(
             !detail::gsl_can_throw())
             : _energy{energy}, _count{1}, _iteration{iteration}
         {
             Expects(_iteration >= 0);
         }
 
-        constexpr cache_type(cache_type const&) noexcept = default;
-        constexpr cache_type(cache_type&&) noexcept      = default;
-        constexpr cache_type& operator                   =(
-            cache_type const&) noexcept = default;
-        constexpr cache_type& operator=(cache_type&&) noexcept = default;
+        constexpr Cache(Cache const&) noexcept = default;
+        constexpr Cache(Cache&&) noexcept      = default;
+        constexpr Cache& operator=(Cache const&) noexcept = default;
+        constexpr Cache& operator=(Cache&&) noexcept = default;
 
         constexpr auto energy() const noexcept { return _energy; }
-
         constexpr auto count() const noexcept { return _count; }
 
         constexpr auto iteration() const noexcept(!detail::gsl_can_throw())
@@ -641,7 +714,7 @@ class CachingGradientAccumulator
             return *this;
         }
 
-        constexpr decltype(auto) record(int const i) noexcept(
+        constexpr decltype(auto) record(index_type const i) noexcept(
             !detail::gsl_can_throw())
         {
             Expects(i >= 0);
@@ -662,82 +735,53 @@ class CachingGradientAccumulator
         }
     };
 
-    using base = EnergyAccumulator<N, C, Hamiltonian>;
-    using typename base::index_type;
 
-    gsl::span<C>                                      _energies;
-    gsl::span<C>                                      _gradients;
-    std::unordered_map<std::vector<bool>, cache_type> _cache;
-
-    auto gradient(
-        index_type const i, index_type const number_parameters) const
-        noexcept(!detail::gsl_can_throw()) -> gsl::span<C const>
-    {
-        Expects((i + 1) * number_parameters <= _gradients.size());
-        return _gradients.subspan(
-            i * number_parameters, number_parameters);
-    }
-
-    auto gradient(index_type const i,
-        index_type const
-            number_parameters) noexcept(!detail::gsl_can_throw())
-        -> gsl::span<C>
-    {
-        Expects((i + 1) * number_parameters <= _gradients.size());
-        return _gradients.subspan(
-            i * number_parameters, number_parameters);
-    }
-
-  public:
     // clang-format off
     CachingGradientAccumulator(Hamiltonian hamiltonian,
-        gsl::span<C> const energy_storage, gsl::span<C> const gradient_storage)
-        : base{std::move(hamiltonian)}
+        energies_type const energy_storage, gradients_type const gradient_storage)
+        : base{}
         , _energies{energy_storage}
         , _gradients{gradient_storage}
         , _cache{}
+        , _hamiltonian{std::move(hamiltonian)}
     // clang-format on
     {
-        Expects(_energies.size() == 0 && _gradients.size() == 0
-                || (_energies.size() > 0 && _gradients.size() > 0
-                       && _gradients.size() % _energies.size() == 0));
     }
 
     template <class State>
-    decltype(auto) operator()(State&& state)
+    auto operator()(State&& state) -> void
     {
         using std::begin, std::end;
-        Expects(this->count() < _energies.size());
+        Expects(count() < _energies.size());
+        Expects(_gradients.template extent<1>() == state.size());
+
         auto       spin              = to_bitset(state.spin());
         auto const number_parameters = state.size();
-        auto const current_gradient =
-            gradient(this->count(), state.size());
         if (auto c = _cache.find(spin); c != std::end(_cache)) {
             auto& cache = c->second;
             if (cache.gradient_is_known()) {
-                auto const known_gradient =
-                    gradient(cache.iteration(), state.size());
+                auto const current_gradient = _gradients[count()];
+                auto const known_gradient   = _gradients[cache.iteration()];
                 std::copy(begin(known_gradient), end(known_gradient),
                     begin(current_gradient));
                 cache.record();
             }
             else {
-                state.def_log_wf(current_gradient);
-                cache.record(this->count());
+                state.der_log_wf(_gradients[count()]);
+                cache.record(count());
             }
-            _energies[this->count()] = cache.energy();
-            static_cast<base*>(this)->operator()(cache.energy());
+            _energies[count()] = cache.energy();
+            static_cast<base&> (*this)(cache.energy());
         }
         else {
-            auto const local_energy = this->hamiltonian()(state);
-            state.def_log_wf(current_gradient);
-            _energies[this->count()]       = local_energy;
-            auto const [iterator, success] = _cache.insert(
-                {std::move(spin), {local_energy, this->count()}});
+            auto const local_energy = _hamiltonian(state);
+            state.der_log_wf(_gradients[count()]);
+            _energies[count()]             = local_energy;
+            auto const [iterator, success] = _cache.emplace(
+                std::move(spin), Cache{local_energy, this->count()});
             Expects(success);
-            static_cast<base*>(this)->operator()(local_energy);
+            static_cast<base&> (*this)(local_energy);
         }
-        return *this;
     }
 
     auto reset()
@@ -747,6 +791,16 @@ class CachingGradientAccumulator
         }
         static_cast<base*>(this)->reset();
     }
+
+    constexpr auto const& cache() const& noexcept { return _cache; }
+    constexpr auto&       cache() & noexcept { return _cache; }
+    constexpr auto        cache() && { return std::move(_cache); }
+
+  private:
+    energies_type                                _energies;
+    gradients_type                               _gradients;
+    std::unordered_map<std::vector<bool>, Cache> _cache;
+    Hamiltonian                                  _hamiltonian;
 };
 
 TCM_SWARM_END_NAMESPACE
