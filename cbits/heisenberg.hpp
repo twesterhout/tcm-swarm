@@ -29,94 +29,54 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef TCM_SWARM_HEISENBERG_HPP
-#define TCM_SWARM_HEISENBERG_HPP
-
-#include <array>
-#include <cmath>
-#include <complex>
-#include <utility>
-
-#include <gsl/gsl>
-
-#include "detail/config.hpp"
+#pragma once
 #include "detail/use_different_spin.hpp"
+#include "mcmc_state.hpp"
+#include <gsl/gsl>
+#include <array>
+#include <omp.h>
+#include <optional>
+
+/// \brief Isotropic Heisenberg Hamiltonian for spin-1/2 particles.
+struct TCM_SWARM_SYMBOL_VISIBLE _tcm_Heisenberg {
+    using State      = tcm::McmcState;
+    using C          = State::C;
+    using index_type = State::index_type;
+    using edge_type  = std::array<index_type, 2>;
+
+    _tcm_Heisenberg() noexcept = default;
+    _tcm_Heisenberg(std::vector<edge_type> edges,
+        std::array<int, 2> num_threads) noexcept(!tcm::detail::gsl_can_throw());
+    _tcm_Heisenberg(std::vector<edge_type> edges, float const cutoff,
+        std::array<int, 2> num_threads) noexcept(!tcm::detail::gsl_can_throw());
+    _tcm_Heisenberg(_tcm_Heisenberg const&)     = default;
+    _tcm_Heisenberg(_tcm_Heisenberg&&) noexcept = default;
+    _tcm_Heisenberg& operator=(_tcm_Heisenberg const&) = default;
+    _tcm_Heisenberg& operator=(_tcm_Heisenberg&&) noexcept = default;
+
+    auto operator()(State const& state) const -> C;
+
+  private:
+    std::vector<edge_type> _edges;
+    std::array<int, 2>     _num_threads;
+    std::optional<float>   _cutoff;
+};
 
 TCM_SWARM_BEGIN_NAMESPACE
 
-template <class R, std::size_t Dimension, bool Periodic>
-struct Heisenberg;
+using Heisenberg = _tcm_Heisenberg;
 
-/// \brief Heisenberg Hamiltonian for spin-1/2 particles in one dimension.
-template <class R, bool Periodic>
-struct Heisenberg<R, 1u, Periodic> {
-    constexpr Heisenberg() noexcept = default;
-    constexpr Heisenberg(R const cutoff) noexcept : _cutoff{cutoff} {}
-    constexpr Heisenberg(Heisenberg const&) = default;
-    constexpr Heisenberg(Heisenberg&&) noexcept      = default;
-    constexpr Heisenberg& operator=(Heisenberg const&) = default;
-    constexpr Heisenberg& operator=(Heisenberg&&) noexcept = default;
+TCM_SWARM_SYMBOL_IMPORT
+auto heisenberg_1D(Heisenberg::index_type const n, bool const periodic,
+    std::array<int, 2> const num_threads = {omp_get_max_threads(), 1})
+    -> Heisenberg;
 
-    template <class State>
-    auto operator()(State const& state) const -> typename State::value_type;
-
-  private:
-    // clang-format off
-    template <class State, std::ptrdiff_t DimSpin>
-    auto kernel(gsl::span<typename State::index_type const, 2> const flips,
-        State const& state,
-        gsl::span<typename State::value_type const, DimSpin> const spin) const
-            -> typename State::value_type
-    // clang-format on
-    {
-        using std::begin, std::end;
-        using C           = typename State::value_type;
-        using vector_type = typename State::vector_type;
-
-        if (spin[flips[0]] == spin[flips[1]]) { return C{1}; }
-        else {
-            auto const [log_quot_wf, cache] = state.log_quot_wf(flips);
-            if (_cutoff.has_value()) {
-                if (log_quot_wf.real() > *_cutoff) {
-                    vector_type s{begin(spin), end(spin)};
-                    s[flips[0]] *= C{-1};
-                    s[flips[1]] *= C{-1};
-                    throw use_different_spin{std::move(s)};
-                }
-            }
-            return C{-1} + C{2} * std::exp(log_quot_wf);
-        }
-    }
-
-    std::optional<R> _cutoff;
-};
-
-template <class R, bool Periodic>
-template <class State>
-auto Heisenberg<R, 1u, Periodic>::operator()(State const& state) const ->
-    typename State::value_type
-{
-    using C           = std::complex<R>;
-    using index_type  = typename State::index_type;
-    using vector_type = typename State::vector_type;
-    static_assert(std::is_same_v<C, typename State::value_type>);
-
-    auto const spin = state.spin();
-    if (spin.size() <= 1) { return C{}; }
-    using size_type = typename decltype(spin)::size_type;
-    C                         energy{0};
-    std::array<index_type, 2> flips;
-    for (index_type i = 0, count = spin.size() - 1; i < count; ++i) {
-        flips = {i, i + 1};
-        energy += kernel(flips, state, spin);
-    }
-    if constexpr (Periodic) {
-        flips = {0, spin.size() - 1};
-        energy += kernel(flips, state, spin);
-    }
-    return energy;
-}
+// clang-format off
+TCM_SWARM_SYMBOL_IMPORT
+auto heisenberg_1D(Heisenberg::index_type const n, bool const periodic,
+    float const cutoff, std::array<int, 2> const
+    num_threads = {omp_get_max_threads(), 1}) -> Heisenberg;
+// clang-format on
 
 TCM_SWARM_END_NAMESPACE
 
-#endif // TCM_SWARM_HEISENBERG_HPP
