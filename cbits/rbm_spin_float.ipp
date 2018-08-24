@@ -35,7 +35,7 @@
 // This is not, strictly speaking required, but helps the IDEs.
 #include "rbm_spin_float.hpp"
 
-#include "detail/axpby.hpp"
+// #include "detail/axpby.hpp"
 #include "detail/dotu.hpp"
 #include "detail/errors.hpp"
 #include "detail/gemv.hpp"

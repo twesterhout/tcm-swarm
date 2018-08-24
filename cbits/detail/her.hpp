@@ -34,9 +34,6 @@
 #ifndef TCM_SWARM_DETAIL_HER_HPP
 #define TCM_SWARM_DETAIL_HER_HPP
 
-#include <gsl/span>
-#include <gsl/multi_span>
-
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
 
@@ -44,8 +41,7 @@ TCM_SWARM_BEGIN_NAMESPACE
 namespace mkl {
 
 namespace detail {
-    namespace {
-
+// NOLINTNEXTLINE
 #define TCM_SWARM_HER_SIGNATURE_FOR(R, C)                                 \
     auto her(CBLAS_LAYOUT const layout, CBLAS_UPLO const uplo,            \
         difference_type const n, R const alpha, C const* const x,         \
@@ -64,29 +60,18 @@ namespace detail {
             cblas_zher(layout, uplo, n, alpha, x, inc_x, a, ld_a);
         }
 #undef TCM_SWARM_HER_SIGNATURE_FOR
-
-    } // namespace
 } // namespace detail
 
 struct her_fn {
-    // clang-format off
-    template <class T, std::ptrdiff_t Dim>
-    TCM_SWARM_FORCEINLINE
+    template <class R>
     auto operator()(Layout const layout, UpLo const uplo,
-        T const alpha, gsl::span<std::complex<T> const, Dim> const x,
-        gsl::multi_span<std::complex<T>, Dim, Dim> const a) const
-            noexcept(!::tcm::detail::gsl_can_throw()) -> void
+        difference_type const n, R const alpha, std::complex<R> const* const x,
+        difference_type const inc_x, std::complex<R>* const a,
+        difference_type const ld_a) noexcept -> void
     {
-        Expects(a.template extent<0>() == a.template extent<1>());
-        Expects(a.template extent<0>() == x.size());
-        auto const n = gsl::narrow<difference_type>(x.size());
-        auto const ld_a = gsl::narrow<difference_type>(a.template extent<1>());
-        constexpr difference_type one{1};
-
-        detail::her(to_raw_enum(layout), to_raw_enum(uplo),
-            n, alpha, x.data(), one, a.data(), ld_a);
+        detail::her(to_raw_enum(layout), to_raw_enum(uplo), n, alpha, x, inc_x,
+            a, ld_a);
     }
-    // clang-format on
 };
 
 /// \brief Global instance of #tcm::mkl::her_fn.

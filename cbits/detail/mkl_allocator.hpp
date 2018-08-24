@@ -133,8 +133,7 @@ class mkl_allocator {
     }
 
     /// \brief Synonym to #allocate, the hint parameter is not used by
-    /// this
-    ///        allocator.
+    ///        this allocator.
     template <class U>
     auto allocate(size_type const n, U const* const /*unused*/) const
         -> pointer

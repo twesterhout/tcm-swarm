@@ -34,18 +34,13 @@
 #ifndef TCM_SWARM_DETAIL_HERK_HPP
 #define TCM_SWARM_DETAIL_HERK_HPP
 
-#include <gsl/span>
-#include <gsl/multi_span>
-
 #include "../detail/config.hpp"
 #include "../detail/mkl.hpp"
 
 TCM_SWARM_BEGIN_NAMESPACE
-namespace mkl {
+namespace mkl{
 
 namespace detail {
-    namespace {
-
 #define TCM_SWARM_HERK_SIGNATURE_FOR(R, C)                                \
     auto herk(CBLAS_LAYOUT const layout, CBLAS_UPLO const uplo,           \
         CBLAS_TRANSPOSE const trans_A, difference_type const n,           \
@@ -66,44 +61,19 @@ namespace detail {
             cblas_zherk(layout, uplo, trans_A, n, k, alpha, a, ld_a, beta,
                 c, ld_c);
         }
-
-    } // namespace
 } // namespace detail
 
 struct herk_fn {
-    // clang-format off
-    template <class T, std::ptrdiff_t DimA1, std::ptrdiff_t DimA2,
-        std::ptrdiff_t DimC>
-    TCM_SWARM_FORCEINLINE
+    template <class R>
     auto operator()(Layout const layout, UpLo const uplo, Transpose const trans,
-        T const alpha, gsl::multi_span<std::complex<T> const, DimA1, DimA2> const a,
-        T const beta, gsl::multi_span<std::complex<T>, DimC, DimC> const c) const
-            noexcept(!::tcm::detail::gsl_can_throw()) -> void
+        difference_type const n, difference_type const k, R const alpha,
+        std::complex<R> const* const a, difference_type const ld_a,
+        R const beta, std::complex<R>* const c,
+        difference_type const ld_c) const noexcept -> void
     {
-        Expects(c.template extent<0>() == c.template extent<1>());
-        auto const n = gsl::narrow<difference_type>(c.template extent<0>());
-        auto const k = ((trans == Transpose::None && layout == Layout::RowMajor)
-                || (trans == Transpose::ConjTrans && layout == Layout::ColMajor))
-            ? gsl::narrow<difference_type>(a.template extent<1>())
-            : gsl::narrow<difference_type>(a.template extent<0>());
-        auto const ld_a = gsl::narrow<difference_type>(a.template extent<1>());
-        auto const ld_c = gsl::narrow<difference_type>(c.template extent<1>());
-
-        if ((trans == Transpose::None && layout == Layout::RowMajor)
-            || (trans == Transpose::ConjTrans && layout == Layout::ColMajor)) {
-            Expects(
-                gsl::narrow<difference_type>(a.template extent<0>()) == n);
-        }
-        else {
-            Expects(
-                gsl::narrow<difference_type>(a.template extent<1>()) == n);
-        }
-
-        detail::herk(to_raw_enum(layout), to_raw_enum(uplo),
-            to_raw_enum(trans), n, k, alpha, a.data(), ld_a, beta,
-            c.data(), ld_c);
+        detail::herk(to_raw_enum(layout), to_raw_enum(uplo), to_raw_enum(trans),
+            n, k, alpha, a, ld_a, beta, c, ld_c);
     }
-    // clang-format on
 };
 
 /// \brief Global instance of #tcm::mkl::herk_fn.
