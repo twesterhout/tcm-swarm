@@ -16,10 +16,16 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:   ./src
   exposed-modules:   NQS.Rbm
-                   , NQS.Internal.Rbm
+                   , NQS.Rbm.Mutable
                    , NQS.Internal.Types
+                   , NQS.Internal.FFI
+                   , NQS.Internal.Rbm
+                   , NQS.Internal.Hamiltonian
+                   , NQS.Internal.Sampling
                    , NQS.Internal.BLAS
-                   -- , NQS.Internal.LAPACK
+                   , NQS.Internal.LAPACK
+                   , NQS.CG
+                   , NQS.SR
 --   exposed-modules:   PSO.Internal.Neural
 --                    , PSO.Neural
                    , PSO.Random
@@ -30,8 +36,10 @@ library
                    , PSO.FromPython
   build-depends:       base >= 4.7 && < 5
                      , primitive
-                     -- , bytestring
+                     , bytestring
                      -- , bytestring-lexing
+                     , singletons
+                     , constraints
                      , deepseq
                      , attoparsec
                      , text
@@ -50,108 +58,23 @@ library
                      -- , pipes
                      -- , folds
                      , derive-storable
+                     , aeson
+                     , fast-logger
   build-tools: c2hs
-  extra-libraries: mkl_rt
-  -- neural, mkl_intel_lp64, mkl_gnu_thread, mkl_vml_avx, mkl_core, gomp
-  ghc-options: -O2 -fprof-auto -fprof-cafs
+  extra-libraries: nqs_c, nqs_cxx, mkl_intel_lp64, mkl_gnu_thread, mkl_core, gomp, pthread
+  ghc-options: -O2 -fprof-auto
   include-dirs: external/intel/mkl/include
               , cbits
   extra-lib-dirs: /home/tom/src/tcm-swarm/external/intel/mkl/lib/intel64
---                 , /home/tom/src/tcm-swarm
+                , /home/tom/src/tcm-swarm/build
   default-language:    Haskell2010
 
--- executable example-heisenberd-1d-exe
---   hs-source-dirs:      example
---   main-is:             Heisenberg1D.hs
---   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N -fprof-auto
---   build-depends:       base
---                      , tcm-swarm
---                      , semigroups >= 0.18.3
---                      , lens >= 4.15.4
---                      , mtl >= 2.2
---                      , hmatrix >= 0.18
---                      , mersenne-random
---                      , mwc-random
---                      , primitive >= 0.6
---                      , vector >= 0.12
---                      , storable-tuple
---                      , bytestring
---                      , pipes
---                      , folds
---                      , statistics
---   default-language:    Haskell2010
-
--- executable hello-world
---   hs-source-dirs:      app
---   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N
---   main-is:             Main.hs
---   build-depends:       base
---                      , tcm-swarm
---                      , vector
---   extra-libraries: neural, mkl_rt
---   ghc-options: -O2 -fprof-auto -fprof-cafs
---   include-dirs: external/intel/mkl/include
---               , cbits
---   extra-lib-dirs: /home/tom/src/tcm-swarm/external/intel/mkl/lib/intel64
---                 , /home/tom/src/tcm-swarm
---   default-language:    Haskell2010
-
--- executable python-parse
---   hs-source-dirs:      example/python
---   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N
---   main-is:             read.hs
---   build-depends:       base
---                      , tcm-swarm
---                      , bytestring
---                      , bytestring-lexing
---                      , text
---                      , attoparsec
---                      , mtl
---                      , optparse-applicative
---                      , deepseq >= 1.4.3.0
---   default-language:    Haskell2010
--- 
--- executable mcmc-stats
---   hs-source-dirs:      example/mcmc
---   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N
---   main-is:             Main.hs
---   build-depends:       base
---                      , tcm-swarm
---                      , bytestring
---                      , bytestring-lexing
---                      , text
---                      , attoparsec
---                      , mtl
---                      , monad-par
---                      , monad-par-extras
---                      , optparse-applicative
---                      , criterion >= 1.2.6.0
---                      , deepseq >= 1.4.3.0
---                      , statistics
---   default-language:    Haskell2010
-
--- executable benchmark-hh1d-mcmc
---   hs-source-dirs:      bench/hh1d
---   ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N
---   main-is:             benchmark.hs
---   build-depends:       base
---                      , tcm-swarm
---                      , bytestring
---                      , bytestring-lexing
---                      , text
---                      , attoparsec
---                      , mtl
---                      , optparse-applicative
---                      , criterion >= 1.2.6.0
---                      , deepseq >= 1.4.3.0
---                      , statistics
---   default-language:    Haskell2010
-
-executable heisenberg-1d
-  hs-source-dirs:      example/hh1d
-  main-is:             hh1dopen.hs
-  ghc-options:         -O2 -rtsopts -fprof-auto -fprof-cafs
+executable mcmc-test 
+  hs-source-dirs:      example/mcmc
+  main-is:             Main.hs 
+  ghc-options:         -O2 -rtsopts -fprof-auto
   build-depends:       base
+                     , attoparsec
                      , tcm-swarm
                      , text
                      -- , lens
@@ -167,27 +90,43 @@ executable heisenberg-1d
                      -- , statistics
                      -- , pipes
                      -- , folds
-  extra-libraries: neural, mkl_intel_lp64, mkl_gnu_thread, mkl_core, gomp, pthread
+  extra-libraries: nqs_c, nqs_cxx, mkl_intel_lp64, mkl_gnu_thread, mkl_core, gomp, pthread
   include-dirs: /home/tom/src/tcm-swarm/external/intel/mkl/include
               , cbits
   extra-lib-dirs: /home/tom/src/tcm-swarm/external/intel/mkl/lib/intel64
                 , /home/tom/src/tcm-swarm/build
   default-language:    Haskell2010
 
--- test-suite tcm-swarm-test
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test
---   other-modules:       PSO.NeuralSpec
---   main-is:             Spec.hs
---   build-depends:       base
---                      , tcm-swarm
---                      , hspec
---                      , hspec-discover
---                      , vector
---                      , hmatrix
---                      , mtl
---   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
---   default-language:    Haskell2010
+executable sr-test 
+  hs-source-dirs:      example/sr
+  main-is:             Main.hs 
+  ghc-options:         -O2 -rtsopts -fprof-auto
+  build-depends:       base
+                     , attoparsec
+                     , tcm-swarm
+                     , text
+                     -- , lens
+                     , mtl
+                     -- , hmatrix
+                     , mersenne-random
+                     , mwc-random
+                     , primitive
+                     , vector
+                     , microlens
+                     , aeson
+                     , fast-logger
+                     -- , bytestring
+                     -- , NumInstances
+                     -- , statistics
+                     -- , pipes
+                     -- , folds
+  extra-libraries: nqs_c, nqs_cxx, mkl_intel_lp64, mkl_gnu_thread, mkl_core, gomp, pthread
+  -- intel_lp64, mkl_gnu_thread, mkl_core, gomp, pthread
+  include-dirs: /home/tom/src/tcm-swarm/external/intel/mkl/include
+              , cbits
+  extra-lib-dirs: /home/tom/src/tcm-swarm/external/intel/mkl/lib/intel64
+                , /home/tom/src/tcm-swarm/build
+  default-language:    Haskell2010
 
 source-repository head
   type:     git

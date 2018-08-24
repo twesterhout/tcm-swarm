@@ -1,12 +1,12 @@
 flags: {}
 extra-package-dbs: []
 build:
-  haddock-arguments:
-    haddock-args:
-      - --html-location='http://hackage.haskell.org/packages/archive/$pkg/latest/doc/html'
+  # haddock-arguments:
+  #   haddock-args:
+  #     - --html-location='http://hackage.haskell.org/packages/archive/$pkg/latest/doc/html'
   haddock-deps: false
-  library-profiling: true
-  executable-profiling: true
+  # library-profiling: true
+  # executable-profiling: true
 packages:
   - .
 extra-deps:
