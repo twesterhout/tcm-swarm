@@ -30,8 +30,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "../heisenberg.hpp"
-#include "../monte_carlo.hpp"
 #include "../spin_state.hpp"
+#include "../monte_carlo.hpp"
 #include "parser.hpp"
 
 #include <gtest/gtest.h>
@@ -48,14 +48,13 @@
 namespace fs = std::experimental::filesystem;
 
 namespace {
-auto force_calculation(std::string const& input_file,
+auto energy_calculation(std::string const& input_file,
     std::string const& output_file, int const number_runs,
     int const steps_per_spin, float const rel_error)
 {
     using tcm::Rbm;
-    using C           = Rbm::C;
-    using R           = Rbm::R;
-
+    using C = Rbm::C;
+    using R = Rbm::R;
     auto const exists = [](auto const& s) { return fs::exists(s); };
     ASSERT_PRED1(exists, input_file);
     ASSERT_PRED1(exists, output_file);
@@ -67,71 +66,34 @@ auto force_calculation(std::string const& input_file,
 
     std::ifstream out{output_file};
     ASSERT_TRUE(out);
-    auto energies_expected = parse_force_input(out, rbm);
+    auto energies_expected = parse_energy_input(out);
     out.close();
 
     try {
-        for (auto const& expected : energies_expected) {
-            auto const& [magnetisation, energy_expected, force_expected] = expected;
+        for (auto expected : energies_expected) {
+            auto const [magnetisation, energy_expected] = expected;
 
             tcm::MetropolisConfig config;
             int const num_threads[] = {4, 1, 1};
             config.runs(number_runs)
-                .steps(tcm::Steps{1000,
-                    static_cast<int>(steps_per_spin * rbm.size_visible()),
+                .steps(tcm::Steps{1000, static_cast<int>(steps_per_spin * rbm.size_visible()),
                     rbm.size_visible()})
                 .threads(num_threads)
                 .flips(2)
                 .magnetisation(magnetisation)
                 .restarts(5);
-            C moments[4] = {};
-
-            // Allocate space for energies
-            auto const number_steps = number_runs * config.steps().count();
-            auto force_buffer = std::get<0>(Rbm::allocate_buffer(rbm.size()));
-            auto [gradients_buffer, _ignored_, gradients_ldim] =
-                Rbm::allocate_buffer(number_steps, rbm.size());
-
-            auto force = gsl::make_span(force_buffer.get(), rbm.size());
-            auto gradients = tcm::Gradients<C>{tcm_Matrix{
-                gradients_buffer.get(), static_cast<int>(number_steps),
-                static_cast<int>(rbm.size()),
-                static_cast<int>(gradients_ldim)}};
-
-            tcm::sample_gradients(rbm,
-                tcm::heisenberg_1D(rbm.size_visible(), true, 5.0), config,
-                gsl::make_span(moments), force, gradients);
-
-            std::cout << "=> M = " << magnetisation << ", E = " << moments[0]
-                      << ", #steps = " << number_steps << '\n';
-
-            for (auto i = 0; i < force.size(); ++i) {
-                EXPECT_CFLOAT_NEAR(force[i],
-                    force_expected[gsl::narrow_cast<std::size_t>(i)],
-                    std::abs(force_expected[gsl::narrow_cast<std::size_t>(i)])
-                        * rel_error);
-            }
-#if 0
-            vector_type covariance_data(rbm.size() * rbm.size());
-            Expects(energies.size() >= rbm.size());
-            auto S = gsl::as_multi_span(covariance.data(), gsl::dim(rbm.size()),
-                    gsl::dim(rbm.size()));
-            tcm::covariance_matrix(
-                gradients, S, gsl::make_span(workspace.data(), rbm.size()));
-
-            std::cout << "=> M = " << magnetisation << ", F = ";
-            std::copy(std::begin(force), std::end(force),
-                std::ostream_iterator<C>{std::cout, ", "});
-            std::cout << '\n';
-
-            std::cout << "S = \n";
-            for (auto i = 0; i < S.template extent<0>(); ++i) {
-                for (auto j = 0; j < S.template extent<1>(); ++j) {
-                    std::cout << S[{i, j}] << ", ";
-                }
-                std::cout << '\n';
-            }
-#endif
+            C moments[1] = {};
+            auto const [dim, _variance] = tcm::sample_moments(rbm,
+                tcm::heisenberg_1D(rbm.size_visible(), true, 5.0, {1, 1}),
+                config, gsl::make_span(moments));
+            auto const variance = _variance.value();
+            auto const energy = moments[0];
+            EXPECT_NEAR(
+                energy.real(), energy_expected.real(), 2 * std::sqrt(variance));
+            EXPECT_NEAR(
+                energy.imag(), energy_expected.imag(), 2 * std::sqrt(variance));
+            EXPECT_CFLOAT_NEAR(energy, energy_expected,
+                std::abs(energy_expected) * R{rel_error});
         }
     } catch (std::exception const& e) {
         std::cerr << "Error: " << e.what() << '\n';
@@ -144,21 +106,48 @@ auto force_calculation(std::string const& input_file,
 }
 } // unnamed namespace
 
-#define TEST_FORCE_CALCULATION(n, m, i, runs, steps, err)                      \
-    TEST(Rbm##n##x##m, Force##i##steps)                                        \
+#define TEST_ENERGY_CALCULATION(n, m, i, runs, steps, err)                     \
+    TEST(Rbm##n##x##m, Energy##i)                                              \
     {                                                                          \
-        force_calculation("input/rbm_" #n "_" #m "_" #i ".in",                 \
-            "input/force_" #n "_" #m "_" #i ".out", runs, steps, err);         \
+        energy_calculation("input/rbm_" #n "_" #m "_" #i ".in",                \
+            "input/heisenberg_" #n "_" #m "_" #i ".out", runs, steps, err);    \
     }
 
-TEST_FORCE_CALCULATION(6, 6, 0, 8, 5000, 0.15)
-// TEST_FORCE_CALCULATION(6, 6, 1, 4, 50000, 0.15)
-// TEST_FORCE_CALCULATION(6, 6, 2, 4, 50000, 0.15)
+TEST_ENERGY_CALCULATION(6, 6, 0,  4, 4000, 0.1)
+TEST_ENERGY_CALCULATION(6, 6, 19, 8, 4000, 0.1) // This one is extremely tricky
+TEST_ENERGY_CALCULATION(6, 24, 0, 4, 4000, 0.1)
+#if 0
+TEST_ENERGY_CALCULATION(6, 6,  0, 4, 2000, 0.01)
+TEST_ENERGY_CALCULATION(6, 6,  1, 4, 2500, 0.01)
+TEST_ENERGY_CALCULATION(6, 6,  2, 4, 8000, 0.01)
+TEST_ENERGY_CALCULATION(6, 6,  3, 4, 2500, 0.01)
+TEST_ENERGY_CALCULATION(6, 6,  4, 4, 2500, 0.01)
+TEST_ENERGY_CALCULATION(6, 6,  5, 4, 2000, 0.01)
+TEST_ENERGY_CALCULATION(6, 6,  6, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6,  7, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6,  8, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6,  9, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 10, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 11, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 12, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 13, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 14, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 15, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 16, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 17, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 18, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 19, 4, 2000, 0.02)
+TEST_ENERGY_CALCULATION(6, 6, 20, 4, 2000, 0.02)
+// TEST_ENERGY_CALCULATION(6, 6, 19)
+#endif
+
+#if 1
+
+#endif
 
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
-
 

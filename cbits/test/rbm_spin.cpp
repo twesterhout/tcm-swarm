@@ -29,14 +29,16 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <fstream>
-#include <complex>
-#include <experimental/filesystem>
+#include "../rbm_spin_float.hpp"
+#include "../spin_state.hpp"
+#include "../random.hpp"
+#include "parser.hpp"
 
 #include <gtest/gtest.h>
 
-#include "../rbm_spin.hpp"
-#include "../parse_test.hpp"
+#include <complex>
+#include <experimental/filesystem>
+#include <fstream>
 
 #define EXPECT_CFLOAT_NEAR(val1, val2, abs_error)                         \
     EXPECT_NEAR(val1.real(), val2.real(), abs_error);                     \
@@ -59,25 +61,47 @@ auto get_flips(
     return flips;
 }
 
-template <class Rbm>
-auto log_wf_calculation(
+static auto log_wf_calculation(
     std::string const& input_file, std::string const& output_file)
 {
-    static_assert(std::is_same_v<std::decay_t<Rbm>, Rbm>);
-    using C = typename Rbm::value_type;
-    using R = typename C::value_type;
+    using tcm::Rbm;
+    using C = Rbm::C;
+    using R = Rbm::R;
     auto const exists = [](auto const& s) { return fs::exists(s); };
     ASSERT_PRED1(exists, input_file);
     ASSERT_PRED1(exists, output_file);
 
     std::ifstream in{input_file};
     ASSERT_TRUE(in);
-    auto const rbm = parse_rbm_input<Rbm>(in);
+    auto const rbm = parse_rbm_input(in);
     in.close();
 
     std::ifstream out{output_file};
     ASSERT_TRUE(out);
     auto spin_log_wf_expected = parse_log_wf_input(out, rbm);
+
+#if 0
+    std::cout << "a = [";
+    auto const a = rbm.visible_span();
+    std::copy(std::begin(a), std::end(a),
+        std::ostream_iterator<C>{std::cout, ", "});
+    std::cout << "]\n";
+
+    std::cout << "b = [";
+    auto const b = rbm.hidden_span();
+    std::copy(std::begin(b), std::end(b),
+        std::ostream_iterator<C>{std::cout, ", "});
+    std::cout << "]\n";
+
+    std::cout << "w = [\n";
+    for (auto i = 0; i < rbm.size_hidden(); ++i) {
+        for (auto j = 0; j < rbm.size_visible(); ++j) {
+            std::cout << rbm.weights(i, j) << ", ";
+        }
+        std::cout << '\n';
+    }
+    std::cout << "]\n";
+#endif
 
     for (auto const& expected : spin_log_wf_expected) {
         auto [spin, log_wf_expected] = expected;
@@ -86,80 +110,109 @@ auto log_wf_calculation(
     }
 }
 
-template <class Rbm>
-auto log_wf_via_flips_calculation(
+static auto log_wf_via_flips_calculation(
     std::string const& input_file, std::string const& output_file)
 {
-    static_assert(std::is_same_v<std::decay_t<Rbm>, Rbm>);
-    using C = typename Rbm::value_type;
-    using R = typename C::value_type;
-    using index_type = typename Rbm::index_type;
+    using tcm::Rbm;
+    using C = Rbm::C;
+    using R = Rbm::R;
+    using index_type = Rbm::index_type;
+
     auto const exists = [](auto const& s) { return fs::exists(s); };
     ASSERT_PRED1(exists, input_file);
     ASSERT_PRED1(exists, output_file);
 
     std::ifstream in{input_file};
     ASSERT_TRUE(in);
-    auto const rbm = parse_rbm_input<Rbm>(in);
+    auto const rbm = parse_rbm_input(in);
     in.close();
+
+#if 0
+    std::cout << "a = [";
+    auto const a = rbm.visible_span();
+    std::copy(std::begin(a), std::end(a),
+        std::ostream_iterator<C>{std::cout, ", "});
+    std::cout << "]\n";
+
+    std::cout << "b = [";
+    auto const b = rbm.hidden_span();
+    std::copy(std::begin(b), std::end(b),
+        std::ostream_iterator<C>{std::cout, ", "});
+    std::cout << "]\n";
+
+    std::cout << "w = [\n";
+    for (auto i = 0; i < rbm.size_hidden(); ++i) {
+        for (auto j = 0; j < rbm.size_visible(); ++j) {
+            std::cout << rbm.weights(i, j) << ", ";
+        }
+        std::cout << '\n';
+    }
+    std::cout << "]\n";
+#endif
 
     std::ifstream out{output_file};
     ASSERT_TRUE(out);
     auto spin_log_wf_expected = parse_log_wf_input(out, rbm);
+    out.close();
 
     auto [initial_spin, initial_log_wf] = spin_log_wf_expected.front();
-    tcm::McmcBase<C> state{rbm, std::move(initial_spin)};
-    EXPECT_CFLOAT_NEAR(state.log_wf(), initial_log_wf,
+    auto const state =
+        rbm.make_state(std::nullopt, tcm::thread_local_generator());
+    state->spin(gsl::span<C const>{initial_spin});
+    EXPECT_CFLOAT_NEAR(state->log_wf(), initial_log_wf,
         std::abs(initial_log_wf) * R{5.0E-5});
     for (auto const& expected : spin_log_wf_expected) {
         auto const& new_spin        = std::get<0>(expected);
         auto const  log_wf_expected = std::get<1>(expected);
         auto const  flips           = get_flips<index_type, C>(
-            state.spin(), gsl::span<C const>{new_spin});
+            state->spin(), gsl::span<C const>{new_spin});
         auto const log_wf =
-            std::get<0>(state.log_quot_wf(gsl::span<index_type const>{flips}))
-            + state.log_wf();
+            std::get<0>(state->log_quot_wf(gsl::span<index_type const>{flips}))
+            + state->log_wf();
         EXPECT_CFLOAT_NEAR(log_wf, log_wf_expected,
             std::abs(log_wf_expected) * R{5.0E-5});
     }
 }
 
-template <class Rbm>
-auto der_log_wf_calculation(
+static auto der_log_wf_calculation(
     std::string const& input_file, std::string const& output_file)
 {
-    static_assert(std::is_same_v<std::decay_t<Rbm>, Rbm>);
-    using C = typename Rbm::value_type;
-    using R = typename C::value_type;
+    using tcm::Rbm;
+    using C = Rbm::C;
+    using R = Rbm::R;
+    using index_type = Rbm::index_type;
+    // using vector_type = std::vector<C, tcm::mkl::mkl_allocator<C, 64>>;
     auto const exists = [](auto const& s) { return fs::exists(s); };
     ASSERT_PRED1(exists, input_file);
     ASSERT_PRED1(exists, output_file);
 
     std::ifstream in{input_file};
     ASSERT_TRUE(in);
-    auto const rbm = parse_rbm_input<Rbm>(in);
+    auto const rbm = parse_rbm_input(in);
     in.close();
 
     std::ifstream out{output_file};
     ASSERT_TRUE(out);
     auto spin_der_log_wf_expected = parse_der_log_wf_input(out, rbm);
+    out.close();
 
     Expects(spin_der_log_wf_expected.size() == 10);
     for (auto const& expected : spin_der_log_wf_expected) {
         auto const& [spin, der_log_wf_expected] = expected;
-        auto const theta = rbm.theta(gsl::make_span(spin));
-        std::vector<C> der_log_wf(rbm.size());
-        rbm.der_log_wf(
-            gsl::span<C const>{spin}, theta, gsl::make_span(der_log_wf));
+
+        auto _theta_buffer = std::get<0>(Rbm::allocate_buffer(rbm.size_hidden()));
+        rbm.theta(gsl::make_span(spin),
+            gsl::make_span<C>(_theta_buffer.get(), rbm.size_hidden()));
+        auto const theta =
+            gsl::make_span<C const>(_theta_buffer.get(), rbm.size_hidden());
+        auto _der_log_wf_buffer = std::get<0>(Rbm::allocate_buffer(rbm.size()));
+        auto der_log_wf = gsl::make_span(_der_log_wf_buffer.get(), rbm.size());
+        rbm.der_log_wf(gsl::span<C const>{spin}, theta, der_log_wf);
 #if 0
-        std::cout << "O[0] = [";
-        std::copy(begin(der_log_wf), end(der_log_wf),
-            std::ostream_iterator<C>{std::cout, ", "});
-        std::cout << "]\n";
-        std::cout << "O[0]_expected = [";
-        std::copy(begin(der_log_wf_expected), end(der_log_wf_expected),
-            std::ostream_iterator<C>{std::cout, ", "});
-        std::cout << "]\n";
+        std::cerr << '[';
+        std::copy(std::begin(der_log_wf), std::end(der_log_wf),
+            std::ostream_iterator<C>{std::cerr, ", "});
+        std::cerr << "]\n";
 #endif
         for (unsigned i = 0; i < der_log_wf.size(); ++i) {
             // std::cout << i << '\n';
@@ -169,28 +222,25 @@ auto der_log_wf_calculation(
     }
 }
 
-#define TEST_LOG_WF_CALCULATION(n, m, i)                                  \
-    TEST(Rbm##n##x##m, LogWF##i)                                          \
-    {                                                                     \
-        log_wf_calculation<tcm::RbmBase<std::complex<float>>>(            \
-            "input/rbm_" #n "_" #m "_" #i ".in",                          \
-            "input/log_wf_" #n "_" #m "_" #i ".out");                     \
+#define TEST_LOG_WF_CALCULATION(n, m, i)                                       \
+    TEST(Rbm##n##x##m, LogWF##i)                                               \
+    {                                                                          \
+        log_wf_calculation("input/rbm_" #n "_" #m "_" #i ".in",                \
+            "input/log_wf_" #n "_" #m "_" #i ".out");                          \
     }
 
-#define TEST_LOG_WF_FLIPS(n, m, i)                                        \
-    TEST(Rbm##n##x##m, LogWFviaFlips##i)                                  \
-    {                                                                     \
-        log_wf_via_flips_calculation<tcm::RbmBase<std::complex<float>>>(  \
-            "input/rbm_" #n "_" #m "_" #i ".in",                          \
-            "input/log_wf_" #n "_" #m "_" #i ".out");                     \
+#define TEST_LOG_WF_FLIPS(n, m, i)                                             \
+    TEST(Rbm##n##x##m, LogWFviaFlips##i)                                       \
+    {                                                                          \
+        log_wf_via_flips_calculation("input/rbm_" #n "_" #m "_" #i ".in",      \
+            "input/log_wf_" #n "_" #m "_" #i ".out");                          \
     }
 
-#define TEST_DER_LOG_WF_CALCULATION(n, m, i)                              \
-    TEST(Rbm##n##x##m, DerLogWF##i)                                       \
-    {                                                                     \
-        der_log_wf_calculation<tcm::RbmBase<std::complex<float>>>(        \
-            "input/rbm_" #n "_" #m "_" #i ".in",                          \
-            "input/gradient_" #n "_" #m "_" #i ".out");                   \
+#define TEST_DER_LOG_WF_CALCULATION(n, m, i)                                   \
+    TEST(Rbm##n##x##m, DerLogWF##i)                                            \
+    {                                                                          \
+        der_log_wf_calculation("input/rbm_" #n "_" #m "_" #i ".in",            \
+            "input/gradient_" #n "_" #m "_" #i ".out");                        \
     }
 
 TEST_LOG_WF_CALCULATION(6, 6, 0)
